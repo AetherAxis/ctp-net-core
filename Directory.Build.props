@@ -1,0 +1,6 @@
+<Project>
+  <!-- 独立仓库级共享属性（CTP wrapper 无 PackageReference，但与 monorepo 约定对齐） -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>

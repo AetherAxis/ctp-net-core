@@ -1,0 +1,21 @@
+# Build outputs
+bin/
+obj/
+
+# CMake build directories (现场编译产物，不入库)
+Ctp.Native/build/
+Ctp.Native/build-mac/
+Ctp.Native/build-win/
+Ctp.Native/build-ios/
+Ctp.Native/build-linux/
+
+# IDE
+.vs/
+.idea/
+*.user
+
+# Logs
+*.log
+
+# macOS
+.DS_Store

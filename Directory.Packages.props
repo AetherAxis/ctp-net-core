@@ -1,0 +1,2 @@
+<!-- CTP wrapper 纯 P/Invoke，零 PackageReference。占位文件（CPM 开启时必需，即使空）。 -->
+<Project />

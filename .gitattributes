@@ -1,0 +1,25 @@
+# CTP SDK 二进制 —— 强制按二进制处理，防止 Windows 上 symlink 损坏
+*.dll binary
+*.dylib binary
+*.so binary
+*.a binary
+*.lib binary
+*.framework binary
+*.framework/** binary
+_code_signature/** binary
+
+# C 头文件和 C++ 源码按文本处理
+*.h text eol=lf
+*.cpp text eol=lf
+*.mm text eol=lf
+*.txt text eol=lf
+*.cmake text eol=lf
+*.plist text eol=lf
+*.modulemap text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.slnx text eol=lf
+*.md text eol=lf
