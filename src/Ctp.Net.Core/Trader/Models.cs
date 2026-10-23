@@ -103,6 +103,9 @@ public sealed record Position
     public int YdPosition { get; init; }
     public int TotalPosition { get; init; }
     public int TodayPosition { get; init; }
+    /// <summary>持仓成本（原生 <c>PositionCost</c>）= Σ(开仓价 × 手数 × 合约乘数)，单位与权益同。
+    /// 之前本地模型把原生字段丢了 —— 上层只能拿最新价冒充均价，浮亏也就没法算。</summary>
+    public double PositionCost { get; init; }
     public double UseMargin { get; init; }
     public double PositionProfit { get; init; }
     public double CloseProfit { get; init; }
@@ -114,6 +117,7 @@ public sealed record Position
         HedgeFlag = (HedgeFlag)p.HedgeFlag,
         PositionDate = (PositionDate)p.PositionDate,
         YdPosition = p.YdPosition, TotalPosition = p.Position, TodayPosition = p.TodayPosition,
+        PositionCost = p.PositionCost,
         UseMargin = p.UseMargin, PositionProfit = p.PositionProfit, CloseProfit = p.CloseProfit,
     };
 
