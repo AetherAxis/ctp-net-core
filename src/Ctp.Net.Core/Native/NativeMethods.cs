@@ -24,6 +24,8 @@ public struct CtpTraderCallbacks
     public IntPtr OnRspSettlementInfoConfirm;
     /// <summary>2026-10-24 尾部追加：查成交应答（逐条回调 + isLast）。</summary>
     public IntPtr OnRspQryTrade;
+    /// <summary>2026-10-24 尾部追加：查结算单应答（与 ctp_api.h 同序——新字段只能往后加）。</summary>
+    public IntPtr OnRspQrySettlementInfo;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void OnFrontConnectedDelegate(IntPtr ctx);
@@ -68,6 +70,10 @@ public struct CtpTraderCallbacks
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void OnRspQryTradeDelegate(IntPtr ctx, IntPtr trade, IntPtr info,
+        int requestId, [MarshalAs(UnmanagedType.I1)] bool isLast);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void OnRspQrySettlementInfoDelegate(IntPtr ctx, IntPtr settlement, IntPtr info,
         int requestId, [MarshalAs(UnmanagedType.I1)] bool isLast);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -149,6 +155,10 @@ internal static class NativeMethods
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern int CtpTrader_QryTrade(IntPtr handle,
         string brokerId, string investorId, string instrumentId, int requestId);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern int CtpTrader_QrySettlementInfo(IntPtr handle,
+        string brokerId, string investorId, string tradingDay, int requestId);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern int CtpTrader_QryInstrument(IntPtr handle, string instrumentId, int requestId);

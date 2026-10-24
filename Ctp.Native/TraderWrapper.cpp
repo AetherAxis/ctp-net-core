@@ -218,6 +218,23 @@ public:
         }
         owner_->cb.OnRspQryTrade(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
+    void OnRspQrySettlementInfo(CThostFtdcSettlementInfoField* pField,
+                                CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        if (!owner_->cb.OnRspQrySettlementInfo) return;
+        // 注意：这里**不能**像查报单那样把空记录吞掉——C# 侧靠 isLast 收尾（吞掉 ⇒ 查询永不完成）。
+        // 与 QryOrder/QryInstrument 崩溃路径不同：本结构体只转发原始文本指针，不做 PtrToStructure。
+        CtpSettlementInfo info{};
+        if (pField) {
+            copyStr(info.TradingDay, pField->TradingDay, sizeof(info.TradingDay));
+            copyStr(info.BrokerID, pField->BrokerID, sizeof(info.BrokerID));
+            copyStr(info.InvestorID, pField->InvestorID, sizeof(info.InvestorID));
+            info.SettlementID = pField->SettlementID;
+            info.SequenceNo = pField->SequenceNo;
+            info.Content = pField->Content;
+            info.ContentLen = static_cast<int>(std::strlen(pField->Content));   // Content 是数组，不会是空指针
+        }
+        owner_->cb.OnRspQrySettlementInfo(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
+    }
     void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* pField,
                                     CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
         if (owner_->cb.OnRspSettlementInfoConfirm)
@@ -424,6 +441,17 @@ CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId,
     CThostFtdcQryInstrumentField f{};
     if (instrumentId) std::strncpy(f.InstrumentID, instrumentId, sizeof(f.InstrumentID) - 1);
     return h->api->ReqQryInstrument(&f, requestId);
+}
+
+CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,
+                               const char* brokerId, const char* investorId,
+                               const char* tradingDay, int requestId) {
+    if (!h || !h->api) return -1;
+    CThostFtdcQrySettlementInfoField f{};
+    if (brokerId)   std::strncpy(f.BrokerID, brokerId, sizeof(f.BrokerID) - 1);
+    if (investorId) std::strncpy(f.InvestorID, investorId, sizeof(f.InvestorID) - 1);
+    if (tradingDay) std::strncpy(f.TradingDay, tradingDay, sizeof(f.TradingDay) - 1);
+    return h->api->ReqQrySettlementInfo(&f, requestId);
 }
 
 CTP_API int CtpTrader_SettlementInfoConfirm(CtpTraderHandle h,

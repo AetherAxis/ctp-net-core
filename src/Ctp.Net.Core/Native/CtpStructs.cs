@@ -215,6 +215,20 @@ public struct CtpTradeInfo
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradeDate;
 }
 
+/// <summary>结算单记录（与 ctp_api.h 的 CtpSettlementInfo 严格同序同宽）。
+/// <para><see cref="Content"/> 是变长大文本指针（GBK），只在该回调期间有效 —— 调用方必须在回调内立即解码成托管串。</para></summary>
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+public struct CtpSettlementInfo
+{
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradingDay;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 11)] public string BrokerID;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 13)] public string InvestorID;
+    public int SettlementID;
+    public int SequenceNo;
+    public int ContentLen;
+    public IntPtr Content;
+}
+
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
 public struct CtpOrderInsertRequest
 {

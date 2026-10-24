@@ -165,6 +165,24 @@ public sealed record Order
         $"成{VolumeTraded} 状态={(char)OrderStatusRaw} {StatusMsg} ref={OrderRef}";
 }
 
+/// <summary>结算单记录（查结算单 <c>ReqQrySettlementInfo</c>）。真前置把结算单正文切成若干条记录下发，
+/// <see cref="SequenceNo"/> 递增；<see cref="Content"/> 已按 GB18030 解码成托管串。</summary>
+public sealed record SettlementInfo
+{
+    public string TradingDay { get; init; } = "";
+    public string BrokerID { get; init; } = "";
+    public string InvestorID { get; init; } = "";
+    public int SettlementID { get; init; }
+    public int SequenceNo { get; init; }
+    public string Content { get; init; } = "";
+
+    /// <summary>把多条记录拼成整篇结算单正文（按 <see cref="SequenceNo"/> 升序，空行拼接口保持原样）。</summary>
+    public static string Join(IEnumerable<SettlementInfo> parts) =>
+        string.Concat(parts.OrderBy(p => p.SequenceNo).Select(p => p.Content));
+
+    public override string ToString() => $"{TradingDay} seq={SequenceNo} {Content.Length}B";
+}
+
 public sealed record Trade
 {
     public string InstrumentId { get; init; } = "";

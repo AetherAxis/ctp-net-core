@@ -116,6 +116,19 @@ typedef struct CtpTradeInfo {
     char TradeDate[9];
 } CtpTradeInfo;
 
+/* 结算单记录（2026-10-24 新增：查结算单 ReqQrySettlementInfo）。
+   Content 是变长大文本（CTP 侧 char[3601]，GBK）——用 (指针,长度) 传，C# 侧按 ContentLen 解码；
+   指针只在该回调期间有效（wrapper 直接指向 SDK 的 pField->Content，不拷贝）。 */
+typedef struct CtpSettlementInfo {
+    char TradingDay[9];
+    char BrokerID[11];
+    char InvestorID[13];
+    int  SettlementID;
+    int  SequenceNo;
+    int  ContentLen;
+    const char* Content;
+} CtpSettlementInfo;
+
 /* 下单请求输入（wrapper 据此构建 CThostFtdcInputOrderField） */
 typedef struct CtpOrderInsertRequest {
     char BrokerID[11];
@@ -170,6 +183,9 @@ typedef struct CtpTraderCallbacks {
     /* 2026-10-24 尾部追加：查成交应答（逐条回调 + isLast，语义同查报单） */
     void (*OnRspQryTrade)(void* ctx, const CtpTradeInfo* trade,
         const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
+    /* 2026-10-24 尾部追加：查结算单应答（pField 为 NULL 即 isLast 收尾——真前置当日无结算单时就是这样） */
+    void (*OnRspQrySettlementInfo)(void* ctx, const CtpSettlementInfo* settlement,
+        const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
 } CtpTraderCallbacks;
 
 /* 生命周期 */
@@ -223,6 +239,9 @@ CTP_API int CtpTrader_QryTrade(CtpTraderHandle h,
     const char* instrumentId, int requestId);
 /* 查合约（全量——真实前置返回全市场清单；本地前置返回上市表） */
 CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId, int requestId);
+/* 查结算单（tradingDay 传 NULL/"" 即查当日；真前置按 (broker,investor,tradingDay) 过滤） */
+CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,
+    const char* brokerId, const char* investorId, const char* tradingDay, int requestId);
 /* 确认结算结果（每个交易日下单前必须先调） */
 CTP_API int CtpTrader_SettlementInfoConfirm(CtpTraderHandle h,
     const char* brokerId, const char* investorId, int requestId);

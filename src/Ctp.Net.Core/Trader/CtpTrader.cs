@@ -49,6 +49,7 @@ public sealed class CtpTrader : IDisposable
     private readonly CtpTraderCallbacks.OnRspQryInvestorPositionDelegate _dQryPosition;
     private readonly CtpTraderCallbacks.OnRspQryOrderDelegate _dQryOrder;
     private readonly CtpTraderCallbacks.OnRspQryTradeDelegate _dQryTrade;
+    private readonly CtpTraderCallbacks.OnRspQrySettlementInfoDelegate _dQrySettlementInfo;
 
 
     private readonly CtpTraderCallbacks.OnRspQryInstrumentDelegate _dQryInstrument;
@@ -86,6 +87,7 @@ public sealed class CtpTrader : IDisposable
         _dQryPosition = OnRspQryInvestorPositionCb;
         _dQryOrder = OnRspQryOrderCb;
         _dQryTrade = OnRspQryTradeCb;
+        _dQrySettlementInfo = OnRspQrySettlementInfoCb;
         _dQryInstrument = OnRspQryInstrumentCb;
         _dRspOrderInsert = OnRspOrderInsertCb;
         _dErrRtnOrderInsert = OnErrRtnOrderInsertCb;
@@ -105,6 +107,7 @@ public sealed class CtpTrader : IDisposable
             OnRspQryInvestorPosition = Marshal.GetFunctionPointerForDelegate(_dQryPosition),
             OnRspQryOrder = Marshal.GetFunctionPointerForDelegate(_dQryOrder),
             OnRspQryTrade = Marshal.GetFunctionPointerForDelegate(_dQryTrade),
+            OnRspQrySettlementInfo = Marshal.GetFunctionPointerForDelegate(_dQrySettlementInfo),
             OnRspQryInstrument = Marshal.GetFunctionPointerForDelegate(_dQryInstrument),
             OnRspOrderInsert = Marshal.GetFunctionPointerForDelegate(_dRspOrderInsert),
             OnErrRtnOrderInsert = Marshal.GetFunctionPointerForDelegate(_dErrRtnOrderInsert),
@@ -334,6 +337,25 @@ public sealed class CtpTrader : IDisposable
         return items.Select(o => Trade.From((CtpTradeInfo)o)).ToList();
     }
 
+    /// <summary>
+    /// 查结算单（<c>ReqQrySettlementInfo</c>）。真前置按 (broker, investor, tradingDay) 过滤，
+    /// <paramref name="tradingDay"/> 传 null/"" 即查当日；结算单是分片大文本（每片一条记录，SequenceNo 递增），
+    /// 一次性收齐后按序号拼成整篇 <see cref="SettlementInfo"/> 列表返回。
+    /// </summary>
+    public async Task<IReadOnlyList<SettlementInfo>> QuerySettlementInfoAsync(string brokerId, string investorId,
+        string? tradingDay = null, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        var reqId = NextRequestId();
+        CountQuery();
+        var tcs = RegisterQuery(reqId);
+        int rc = NativeMethods.CtpTrader_QrySettlementInfo(
+            _handle, brokerId, investorId, tradingDay ?? "", reqId);
+        if (rc != 0) throw new CtpException($"ReqQrySettlementInfo 发送失败 rc={rc}");
+        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        return items.OfType<SettlementInfo>().OrderBy(x => x.SequenceNo).ToList();
+    }
+
     private QueryCollector RegisterQuery(int reqId)
     {
         var c = new QueryCollector();
@@ -439,6 +461,38 @@ public sealed class CtpTrader : IDisposable
         CtpTradeInfo? t = trade != IntPtr.Zero ? Marshal.PtrToStructure<CtpTradeInfo>(trade) : null;
         RealOut.WriteLine($"[ctp-trader] 成交查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={t?.InstrumentID} TradeID={t?.TradeID} Vol={t?.Volume}");
         self.OnQueryItem(requestId, t, i, isLast);
+    }
+
+    private void OnRspQrySettlementInfoCb(IntPtr ctx, IntPtr settlement, IntPtr info, int requestId, bool isLast)
+    {
+        var self = Self(ctx);
+        var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
+        // 文本必须在回调内解码：Content 指针指向 SDK 内部缓冲，回调返回即失效
+        SettlementInfo? si = null;
+        if (settlement != IntPtr.Zero)
+        {
+            var raw = Marshal.PtrToStructure<CtpSettlementInfo>(settlement);
+            si = new SettlementInfo
+            {
+                TradingDay = raw.TradingDay ?? "",
+                BrokerID = raw.BrokerID ?? "",
+                InvestorID = raw.InvestorID ?? "",
+                SettlementID = raw.SettlementID,
+                SequenceNo = raw.SequenceNo,
+                Content = raw.Content == IntPtr.Zero || raw.ContentLen <= 0
+                    ? ""
+                    : Encoding.GetEncoding("GB18030").GetString(ReadBytes(raw.Content, raw.ContentLen)),
+            };
+        }
+        RealOut.WriteLine($"[ctp-trader] 结算单响应 ErrorID={i.ErrorID} isLast={isLast} seq={si?.SequenceNo} len={si?.Content.Length}");
+        self.OnQueryItem(requestId, si, i, isLast);
+    }
+
+    private static byte[] ReadBytes(IntPtr p, int len)
+    {
+        var buf = new byte[len];
+        Marshal.Copy(p, buf, 0, len);
+        return buf;
     }
 
     private void OnRspQryInstrumentCb(IntPtr ctx, IntPtr instrument, IntPtr info, int requestId, bool isLast)
