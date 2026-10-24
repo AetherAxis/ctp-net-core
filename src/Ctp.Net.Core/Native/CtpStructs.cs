@@ -226,6 +226,21 @@ public struct CtpExchangeInfo
     public byte ExchangeProperty;
 }
 
+/// <summary>投资者记录（与 ctp_api.h 的 CtpInvestorInfo 严格同序同宽）。</summary>
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+public struct CtpInvestorInfo
+{
+    // InvestorName 是 GBK（"某某某"），按原始字节取回再自行解码（同 CtpExchangeInfo）。
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 11)] public byte[] BrokerID;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 13)] public byte[] InvestorID;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 81)] public byte[] InvestorName;
+    public byte IdentifiedCardType;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 51)] public byte[] IdentifiedCardNo;
+    public byte IsActive;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 21)] public byte[] Mobile;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)] public byte[] OpenDate;
+}
+
 /// <summary>结算单记录（与 ctp_api.h 的 CtpSettlementInfo 严格同序同宽）。
 /// <para><see cref="Content"/> 是变长大文本指针（GBK），只在该回调期间有效 —— 调用方必须在回调内立即解码成托管串。</para></summary>
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]

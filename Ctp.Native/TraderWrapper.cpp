@@ -229,6 +229,22 @@ public:
         }
         owner_->cb.OnRspQryExchange(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
+    void OnRspQryInvestor(CThostFtdcInvestorField* pField,
+                          CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        if (!owner_->cb.OnRspQryInvestor) return;
+        CtpInvestorInfo info{};
+        if (pField) {
+            copyStr(info.BrokerID, pField->BrokerID, sizeof(info.BrokerID));
+            copyStr(info.InvestorID, pField->InvestorID, sizeof(info.InvestorID));
+            copyStr(info.InvestorName, pField->InvestorName, sizeof(info.InvestorName));
+            info.IdentifiedCardType = pField->IdentifiedCardType;
+            copyStr(info.IdentifiedCardNo, pField->IdentifiedCardNo, sizeof(info.IdentifiedCardNo));
+            info.IsActive = pField->IsActive;
+            copyStr(info.Mobile, pField->Mobile, sizeof(info.Mobile));
+            copyStr(info.OpenDate, pField->OpenDate, sizeof(info.OpenDate));
+        }
+        owner_->cb.OnRspQryInvestor(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
+    }
     void OnRspQrySettlementInfo(CThostFtdcSettlementInfoField* pField,
                                 CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
         if (!owner_->cb.OnRspQrySettlementInfo) return;
@@ -459,6 +475,13 @@ CTP_API int CtpTrader_QryExchange(CtpTraderHandle h, const char* exchangeId, int
     CThostFtdcQryExchangeField f{};
     if (exchangeId) std::strncpy(f.ExchangeID, exchangeId, sizeof(f.ExchangeID) - 1);
     return h->api->ReqQryExchange(&f, requestId);
+}
+
+CTP_API int CtpTrader_QryInvestor(CtpTraderHandle h, const char* investorId, int requestId) {
+    if (!h || !h->api) return -1;
+    CThostFtdcQryInvestorField f{};
+    if (investorId) std::strncpy(f.InvestorID, investorId, sizeof(f.InvestorID) - 1);
+    return h->api->ReqQryInvestor(&f, requestId);
 }
 
 CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,

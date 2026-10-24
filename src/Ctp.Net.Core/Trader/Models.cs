@@ -175,6 +175,23 @@ public sealed record Exchange
     public override string ToString() => $"{ExchangeId} {ExchangeName} ({(char)PropertyRaw})";
 }
 
+/// <summary>投资者（查投资者 <c>ReqQryInvestor</c>）——一个账户一行。</summary>
+public sealed record Investor
+{
+    public string BrokerId { get; init; } = "";
+    public string InvestorId { get; init; } = "";
+    public string InvestorName { get; init; } = "";
+    /// <summary>证件类型（CTP 枚举原值，'0' 身份证 / '1' 护照 …）。</summary>
+    public byte IdentifiedCardType { get; init; }
+    public string IdentifiedCardNo { get; init; } = "";
+    /// <summary>'0' 禁止交易 / '1' 启用。</summary>
+    public byte IsActive { get; init; }
+    public string Mobile { get; init; } = "";
+    public string OpenDate { get; init; } = "";
+
+    public override string ToString() => $"{BrokerId}/{InvestorId} {InvestorName} 卡={IdentifiedCardNo} 启用={(char)IsActive}";
+}
+
 /// <summary>结算单记录（查结算单 <c>ReqQrySettlementInfo</c>）。真前置把结算单正文切成若干条记录下发，
 /// <see cref="SequenceNo"/> 递增；<see cref="Content"/> 已按 GB18030 解码成托管串。</summary>
 public sealed record SettlementInfo

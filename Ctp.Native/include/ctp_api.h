@@ -123,6 +123,18 @@ typedef struct CtpExchangeInfo {
     char ExchangeProperty;   /* 真前置实测见 '0'/'1'（含义未逆向） */
 } CtpExchangeInfo;
 
+/* 投资者记录（2026-10-24 新增：查投资者 ReqQryInvestor——一个账户一行）。 */
+typedef struct CtpInvestorInfo {
+    char BrokerID[11];
+    char InvestorID[13];
+    char InvestorName[81];        /* GBK */
+    char IdentifiedCardType;      /* '0' 身份证 / '1' 护照 / ... */
+    char IdentifiedCardNo[51];
+    char IsActive;                /* '0' 禁止 / '1' 启用 */
+    char Mobile[21];
+    char OpenDate[9];
+} CtpInvestorInfo;
+
 /* 结算单记录（2026-10-24 新增：查结算单 ReqQrySettlementInfo）。
    Content 是变长大文本（CTP 侧 char[3601]，GBK）——用 (指针,长度) 传，C# 侧按 ContentLen 解码；
    指针只在该回调期间有效（wrapper 直接指向 SDK 的 pField->Content，不拷贝）。 */
@@ -196,6 +208,9 @@ typedef struct CtpTraderCallbacks {
     /* 2026-10-24 尾部追加：查交易所应答（逐条回调 + isLast） */
     void (*OnRspQryExchange)(void* ctx, const CtpExchangeInfo* exchange,
         const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
+    /* 2026-10-24 尾部追加：查投资者应答（逐条回调 + isLast） */
+    void (*OnRspQryInvestor)(void* ctx, const CtpInvestorInfo* investor,
+        const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
 } CtpTraderCallbacks;
 
 /* 生命周期 */
@@ -251,6 +266,8 @@ CTP_API int CtpTrader_QryTrade(CtpTraderHandle h,
 CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId, int requestId);
 /* 查交易所（exchangeId 传 NULL/"" 即全量——真前置返回全部交易所） */
 CTP_API int CtpTrader_QryExchange(CtpTraderHandle h, const char* exchangeId, int requestId);
+/* 查投资者（investorId 传 NULL/"" 即全量——真前置按投资者过滤） */
+CTP_API int CtpTrader_QryInvestor(CtpTraderHandle h, const char* investorId, int requestId);
 /* 查结算单（tradingDay 传 NULL/"" 即查当日；真前置按 (broker,investor,tradingDay) 过滤） */
 CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,
     const char* brokerId, const char* investorId, const char* tradingDay, int requestId);

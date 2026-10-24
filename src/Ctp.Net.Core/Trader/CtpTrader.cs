@@ -51,6 +51,7 @@ public sealed class CtpTrader : IDisposable
     private readonly CtpTraderCallbacks.OnRspQryTradeDelegate _dQryTrade;
     private readonly CtpTraderCallbacks.OnRspQrySettlementInfoDelegate _dQrySettlementInfo;
     private readonly CtpTraderCallbacks.OnRspQryExchangeDelegate _dQryExchange;
+    private readonly CtpTraderCallbacks.OnRspQryInvestorDelegate _dQryInvestor;
 
 
     private readonly CtpTraderCallbacks.OnRspQryInstrumentDelegate _dQryInstrument;
@@ -90,6 +91,7 @@ public sealed class CtpTrader : IDisposable
         _dQryTrade = OnRspQryTradeCb;
         _dQrySettlementInfo = OnRspQrySettlementInfoCb;
         _dQryExchange = OnRspQryExchangeCb;
+        _dQryInvestor = OnRspQryInvestorCb;
         _dQryInstrument = OnRspQryInstrumentCb;
         _dRspOrderInsert = OnRspOrderInsertCb;
         _dErrRtnOrderInsert = OnErrRtnOrderInsertCb;
@@ -111,6 +113,7 @@ public sealed class CtpTrader : IDisposable
             OnRspQryTrade = Marshal.GetFunctionPointerForDelegate(_dQryTrade),
             OnRspQrySettlementInfo = Marshal.GetFunctionPointerForDelegate(_dQrySettlementInfo),
             OnRspQryExchange = Marshal.GetFunctionPointerForDelegate(_dQryExchange),
+            OnRspQryInvestor = Marshal.GetFunctionPointerForDelegate(_dQryInvestor),
             OnRspQryInstrument = Marshal.GetFunctionPointerForDelegate(_dQryInstrument),
             OnRspOrderInsert = Marshal.GetFunctionPointerForDelegate(_dRspOrderInsert),
             OnErrRtnOrderInsert = Marshal.GetFunctionPointerForDelegate(_dErrRtnOrderInsert),
@@ -372,6 +375,19 @@ public sealed class CtpTrader : IDisposable
         return items.OfType<Exchange>().ToList();
     }
 
+    /// <summary>查投资者（<c>ReqQryInvestor</c>）：一个账户一行（真前置按投资者过滤）。</summary>
+    public async Task<IReadOnlyList<Investor>> QueryInvestorAsync(string? investorId = null, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        var reqId = NextRequestId();
+        CountQuery();
+        var tcs = RegisterQuery(reqId);
+        int rc = NativeMethods.CtpTrader_QryInvestor(_handle, investorId ?? "", reqId);
+        if (rc != 0) throw new CtpException($"ReqQryInvestor 发送失败 rc={rc}");
+        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        return items.OfType<Investor>().ToList();
+    }
+
     private QueryCollector RegisterQuery(int reqId)
     {
         var c = new QueryCollector();
@@ -496,6 +512,30 @@ public sealed class CtpTrader : IDisposable
         }
         RealOut.WriteLine($"[ctp-trader] 交易所响应 ErrorID={i.ErrorID} isLast={isLast} {ex?.ExchangeId} {ex?.ExchangeName}");
         self.OnQueryItem(requestId, ex, i, isLast);
+    }
+
+    private void OnRspQryInvestorCb(IntPtr ctx, IntPtr investor, IntPtr info, int requestId, bool isLast)
+    {
+        var self = Self(ctx);
+        var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
+        Investor? inv = null;
+        if (investor != IntPtr.Zero)
+        {
+            var raw = Marshal.PtrToStructure<CtpInvestorInfo>(investor);
+            inv = new Investor
+            {
+                BrokerId = DecodeGbkZ(raw.BrokerID),
+                InvestorId = DecodeGbkZ(raw.InvestorID),
+                InvestorName = DecodeGbkZ(raw.InvestorName),
+                IdentifiedCardType = raw.IdentifiedCardType,
+                IdentifiedCardNo = DecodeGbkZ(raw.IdentifiedCardNo),
+                IsActive = raw.IsActive,
+                Mobile = DecodeGbkZ(raw.Mobile),
+                OpenDate = DecodeGbkZ(raw.OpenDate),
+            };
+        }
+        RealOut.WriteLine($"[ctp-trader] 投资者响应 ErrorID={i.ErrorID} isLast={isLast} {inv?.InvestorId} {inv?.InvestorName}");
+        self.OnQueryItem(requestId, inv, i, isLast);
     }
 
     private void OnRspQrySettlementInfoCb(IntPtr ctx, IntPtr settlement, IntPtr info, int requestId, bool isLast)
