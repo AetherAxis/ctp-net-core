@@ -48,6 +48,7 @@ public sealed class CtpTrader : IDisposable
     private readonly CtpTraderCallbacks.OnRspQryTradingAccountDelegate _dQryAccount;
     private readonly CtpTraderCallbacks.OnRspQryInvestorPositionDelegate _dQryPosition;
     private readonly CtpTraderCallbacks.OnRspQryOrderDelegate _dQryOrder;
+    private readonly CtpTraderCallbacks.OnRspQryTradeDelegate _dQryTrade;
 
 
     private readonly CtpTraderCallbacks.OnRspQryInstrumentDelegate _dQryInstrument;
@@ -84,6 +85,7 @@ public sealed class CtpTrader : IDisposable
         _dQryAccount = OnRspQryTradingAccountCb;
         _dQryPosition = OnRspQryInvestorPositionCb;
         _dQryOrder = OnRspQryOrderCb;
+        _dQryTrade = OnRspQryTradeCb;
         _dQryInstrument = OnRspQryInstrumentCb;
         _dRspOrderInsert = OnRspOrderInsertCb;
         _dErrRtnOrderInsert = OnErrRtnOrderInsertCb;
@@ -102,6 +104,7 @@ public sealed class CtpTrader : IDisposable
             OnRspQryTradingAccount = Marshal.GetFunctionPointerForDelegate(_dQryAccount),
             OnRspQryInvestorPosition = Marshal.GetFunctionPointerForDelegate(_dQryPosition),
             OnRspQryOrder = Marshal.GetFunctionPointerForDelegate(_dQryOrder),
+            OnRspQryTrade = Marshal.GetFunctionPointerForDelegate(_dQryTrade),
             OnRspQryInstrument = Marshal.GetFunctionPointerForDelegate(_dQryInstrument),
             OnRspOrderInsert = Marshal.GetFunctionPointerForDelegate(_dRspOrderInsert),
             OnErrRtnOrderInsert = Marshal.GetFunctionPointerForDelegate(_dErrRtnOrderInsert),
@@ -313,6 +316,24 @@ public sealed class CtpTrader : IDisposable
         return items.Select(o => Order.From((CtpOrderInfo)o)).ToList();
     }
 
+    /// <summary>
+    /// 查成交（ReqQryTrade）：标准客户端的「成交明细」来源，SDK 语义与查报单一致
+    /// （逐条回调 + `bIsLast` 收尾）。<paramref name="instrumentId"/> 为空串 = 全量查询。
+    /// </summary>
+    public async Task<IReadOnlyList<Trade>> QueryTradeAsync(string brokerId, string investorId,
+        string? instrumentId = null, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        var reqId = NextRequestId();
+        CountQuery();
+        var tcs = RegisterQuery(reqId);
+        int rc = NativeMethods.CtpTrader_QryTrade(
+            _handle, brokerId, investorId, instrumentId ?? "", reqId);
+        if (rc != 0) throw new CtpException($"ReqQryTrade 发送失败 rc={rc}");
+        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        return items.Select(o => Trade.From((CtpTradeInfo)o)).ToList();
+    }
+
     private QueryCollector RegisterQuery(int reqId)
     {
         var c = new QueryCollector();
@@ -384,8 +405,9 @@ public sealed class CtpTrader : IDisposable
     {
         var self = Self(ctx);
         var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
-        var a = account != IntPtr.Zero ? Marshal.PtrToStructure<CtpAccountInfo>(account) : default;
-        RealOut.WriteLine($"[ctp-trader] 资金查询响应 ErrorID={i.ErrorID} isLast={isLast} Account={a.AccountID} Available={a.Available}");
+        // 空记录（account == nullptr）保留为 null：查询完成信号，不入列（2026-10-24）
+        CtpAccountInfo? a = account != IntPtr.Zero ? Marshal.PtrToStructure<CtpAccountInfo>(account) : null;
+        RealOut.WriteLine($"[ctp-trader] 资金查询响应 ErrorID={i.ErrorID} isLast={isLast} Account={a?.AccountID} Available={a?.Available}");
         self.OnQueryItem(requestId, a, i, isLast);
     }
 
@@ -393,8 +415,9 @@ public sealed class CtpTrader : IDisposable
     {
         var self = Self(ctx);
         var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
-        var p = position != IntPtr.Zero ? Marshal.PtrToStructure<CtpPositionInfo>(position) : default;
-        RealOut.WriteLine($"[ctp-trader] 持仓查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={p.InstrumentID} Pos={p.Position}");
+        // 空记录（position == nullptr）保留为 null：查询完成信号，不入列（2026-10-24）
+        CtpPositionInfo? p = position != IntPtr.Zero ? Marshal.PtrToStructure<CtpPositionInfo>(position) : null;
+        RealOut.WriteLine($"[ctp-trader] 持仓查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={p?.InstrumentID} Pos={p?.Position}");
         self.OnQueryItem(requestId, p, i, isLast);
     }
 
@@ -402,17 +425,29 @@ public sealed class CtpTrader : IDisposable
     {
         var self = Self(ctx);
         var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
-        var o = order != IntPtr.Zero ? Marshal.PtrToStructure<CtpOrderInfo>(order) : default;
-        RealOut.WriteLine($"[ctp-trader] 报单查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={o.InstrumentID}");
+        // 空记录（order == nullptr）保留为 null：查询完成信号，不入列（2026-10-24）
+        CtpOrderInfo? o = order != IntPtr.Zero ? Marshal.PtrToStructure<CtpOrderInfo>(order) : null;
+        RealOut.WriteLine($"[ctp-trader] 报单查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={o?.InstrumentID}");
         self.OnQueryItem(requestId, o, i, isLast);
+    }
+
+    private void OnRspQryTradeCb(IntPtr ctx, IntPtr trade, IntPtr info, int requestId, bool isLast)
+    {
+        var self = Self(ctx);
+        var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
+        // 空记录（trade == nullptr）保留为 null：查询完成信号，不入列（2026-10-24）
+        CtpTradeInfo? t = trade != IntPtr.Zero ? Marshal.PtrToStructure<CtpTradeInfo>(trade) : null;
+        RealOut.WriteLine($"[ctp-trader] 成交查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={t?.InstrumentID} TradeID={t?.TradeID} Vol={t?.Volume}");
+        self.OnQueryItem(requestId, t, i, isLast);
     }
 
     private void OnRspQryInstrumentCb(IntPtr ctx, IntPtr instrument, IntPtr info, int requestId, bool isLast)
     {
         var self = Self(ctx);
         var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
-        var f = instrument != IntPtr.Zero ? Marshal.PtrToStructure<CtpInstrumentInfo>(instrument) : default;
-        RealOut.WriteLine($"[ctp-trader] 合约查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={f.InstrumentID}");
+        // 空记录（instrument == nullptr）保留为 null：查询完成信号，不入列（2026-10-24）
+        CtpInstrumentInfo? f = instrument != IntPtr.Zero ? Marshal.PtrToStructure<CtpInstrumentInfo>(instrument) : null;
+        RealOut.WriteLine($"[ctp-trader] 合约查询响应 ErrorID={i.ErrorID} isLast={isLast} Instr={f?.InstrumentID}");
         self.OnQueryItem(requestId, f, i, isLast);
     }
 
@@ -468,7 +503,7 @@ public sealed class CtpTrader : IDisposable
         self.TryCompletePending(requestId, new RspCallback(i, null));
     }
 
-    private void OnQueryItem(int reqId, object item, RspInfoField info, bool isLast)
+    private void OnQueryItem(int reqId, object? item, RspInfoField info, bool isLast)
     {
         QueryCollector? c;
         lock (_pendingLock) _queryPending.TryGetValue(reqId, out c);
@@ -484,7 +519,9 @@ public sealed class CtpTrader : IDisposable
         // 同一写里后续帧的行丢掉（探针基线实证：SDK 两帧回调都发，旧版只收第一行）——改为<b>静默期收尾</b>：
         // 最后一次 isLast=true 后 150ms 无新行才完成，期间到达的行全部入列。真实前置的 false..true 序列
         // 同样兼容（false 只入列不起表，true 起表/续表），代价仅为每查询 +150ms。
-        lock (_pendingLock) c.Items.Add(item);
+        // 空记录（真前置空结果回调 pField==nullptr）= 「无数据但查询已完成」的信号，不入列
+        if (item is not null)
+            lock (_pendingLock) c.Items.Add(item);
         if (isLast)
         {
             lock (_pendingLock)

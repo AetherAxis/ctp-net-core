@@ -22,6 +22,8 @@ public struct CtpTraderCallbacks
     public IntPtr OnRtnOrder;
     public IntPtr OnRtnTrade;
     public IntPtr OnRspSettlementInfoConfirm;
+    /// <summary>2026-10-24 尾部追加：查成交应答（逐条回调 + isLast）。</summary>
+    public IntPtr OnRspQryTrade;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void OnFrontConnectedDelegate(IntPtr ctx);
@@ -62,6 +64,10 @@ public struct CtpTraderCallbacks
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void OnRspQryOrderDelegate(IntPtr ctx, IntPtr order, IntPtr info,
+        int requestId, [MarshalAs(UnmanagedType.I1)] bool isLast);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void OnRspQryTradeDelegate(IntPtr ctx, IntPtr trade, IntPtr info,
         int requestId, [MarshalAs(UnmanagedType.I1)] bool isLast);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -138,6 +144,10 @@ internal static class NativeMethods
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern int CtpTrader_QryOrder(IntPtr handle,
+        string brokerId, string investorId, string instrumentId, int requestId);
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern int CtpTrader_QryTrade(IntPtr handle,
         string brokerId, string investorId, string instrumentId, int requestId);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]

@@ -210,6 +210,9 @@ public struct CtpTradeInfo
     public int Volume;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradeTime;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradingDay;
+    // 2026-10-24 尾部追加（与 ctp_api.h 的 CtpTradeInfo 严格同序同宽）：查成交需要交易所/成交日期
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string ExchangeID;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradeDate;
 }
 
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]

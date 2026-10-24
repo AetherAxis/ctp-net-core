@@ -79,7 +79,7 @@ public:
             info.CloseProfit = pField->CloseProfit;
             copyStr(info.TradingDay, pField->TradingDay, sizeof(info.TradingDay));
         }
-        owner_->cb.OnRspQryTradingAccount(owner_->ctx, &info, pRspInfo, nRequestID, bIsLast);
+        owner_->cb.OnRspQryTradingAccount(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
     void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* pField,
                                   CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
@@ -101,10 +101,14 @@ public:
             info.PositionProfit = pField->PositionProfit;
             info.CloseProfit = pField->CloseProfit;
         }
-        owner_->cb.OnRspQryInvestorPosition(owner_->ctx, &info, pRspInfo, nRequestID, bIsLast);
+        owner_->cb.OnRspQryInvestorPosition(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
     void OnRspQryOrder(CThostFtdcOrderField* pField,
                        CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        // 必须吞掉「空记录」回调（pField==nullptr）：2026-10-24 实测——对**本地前置的 13B tag 空表帧**，
+        // 一旦把该回调转发上去，SDK 交出的是无效记录指针，C# 侧 Marshal.PtrToStructure 直接段错误
+        // （测试宿主 6.6GB core dump 实证；同款帧在 op=03 查成交上正常 ⇒ 是 op=01 的记录解析问题）。
+        // 代价：本地前置的查报单查询以 30s 超时收尾（真前置非空帧解析正常，不受影响）。
         if (!owner_->cb.OnRspQryOrder || !pField) return;
         CtpOrderInfo info{};
         copyStr(info.InstrumentID, pField->InstrumentID, sizeof(info.InstrumentID));
@@ -124,10 +128,11 @@ public:
         copyStr(info.InsertTime, pField->InsertTime, sizeof(info.InsertTime));
         copyStr(info.UpdateTime, pField->UpdateTime, sizeof(info.UpdateTime));
         copyStr(info.StatusMsg, pField->StatusMsg, sizeof(info.StatusMsg));
-        owner_->cb.OnRspQryOrder(owner_->ctx, &info, pRspInfo, nRequestID, bIsLast);
+        owner_->cb.OnRspQryOrder(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
     void OnRspQryInstrument(CThostFtdcInstrumentField* pField,
                             CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        // 同查报单：空记录回调一律不转发（风险与理由同上——宁可查询超时，也不能让客户端进程崩溃）。
         if (!owner_->cb.OnRspQryInstrument || !pField) return;
         CtpInstrumentInfo info{};
         copyStr(info.InstrumentID, pField->InstrumentID, sizeof(info.InstrumentID));
@@ -135,7 +140,7 @@ public:
         info.VolumeMultiple = pField->VolumeMultiple;
         info.PriceTick = pField->PriceTick;
         // CThostFtdcInstrumentField 无昨结算字段（属行情面）——置 0，前置侧不依赖该值
-        owner_->cb.OnRspQryInstrument(owner_->ctx, &info, pRspInfo, nRequestID, bIsLast);
+        owner_->cb.OnRspQryInstrument(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
     void OnRspOrderInsert(CThostFtdcInputOrderField* pField,
                           CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
@@ -188,7 +193,30 @@ public:
         info.Volume = pField->Volume;
         copyStr(info.TradeTime, pField->TradeTime, sizeof(info.TradeTime));
         copyStr(info.TradingDay, pField->TradingDay, sizeof(info.TradingDay));
+        copyStr(info.ExchangeID, pField->ExchangeID, sizeof(info.ExchangeID));
+        copyStr(info.TradeDate, pField->TradeDate, sizeof(info.TradeDate));
         owner_->cb.OnRtnTrade(owner_->ctx, &info);
+    }
+    void OnRspQryTrade(CThostFtdcTradeField* pField,
+                       CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        if (!owner_->cb.OnRspQryTrade) return;
+        CtpTradeInfo info{};
+        if (pField) {
+            copyStr(info.InstrumentID, pField->InstrumentID, sizeof(info.InstrumentID));
+            copyStr(info.OrderRef, pField->OrderRef, sizeof(info.OrderRef));
+            copyStr(info.TradeID, pField->TradeID, sizeof(info.TradeID));
+            copyStr(info.OrderSysID, pField->OrderSysID, sizeof(info.OrderSysID));
+            info.Direction = pField->Direction;
+            info.OffsetFlag = pField->OffsetFlag;
+            info.HedgeFlag = pField->HedgeFlag;
+            info.Price = pField->Price;
+            info.Volume = pField->Volume;
+            copyStr(info.TradeTime, pField->TradeTime, sizeof(info.TradeTime));
+            copyStr(info.TradingDay, pField->TradingDay, sizeof(info.TradingDay));
+            copyStr(info.ExchangeID, pField->ExchangeID, sizeof(info.ExchangeID));
+            copyStr(info.TradeDate, pField->TradeDate, sizeof(info.TradeDate));
+        }
+        owner_->cb.OnRspQryTrade(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
     void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* pField,
                                     CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
@@ -378,6 +406,17 @@ CTP_API int CtpTrader_QryOrder(CtpTraderHandle h,
     if (investorId) std::strncpy(f.InvestorID, investorId, sizeof(f.InvestorID) - 1);
     if (instrumentId) std::strncpy(f.InstrumentID, instrumentId, sizeof(f.InstrumentID) - 1);
     return h->api->ReqQryOrder(&f, requestId);
+}
+
+CTP_API int CtpTrader_QryTrade(CtpTraderHandle h,
+                       const char* brokerId, const char* investorId,
+                       const char* instrumentId, int requestId) {
+    if (!h || !h->api) return -1;
+    CThostFtdcQryTradeField f{};
+    if (brokerId)   std::strncpy(f.BrokerID, brokerId, sizeof(f.BrokerID) - 1);
+    if (investorId) std::strncpy(f.InvestorID, investorId, sizeof(f.InvestorID) - 1);
+    if (instrumentId) std::strncpy(f.InstrumentID, instrumentId, sizeof(f.InstrumentID) - 1);
+    return h->api->ReqQryTrade(&f, requestId);
 }
 
 CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId, int requestId) {

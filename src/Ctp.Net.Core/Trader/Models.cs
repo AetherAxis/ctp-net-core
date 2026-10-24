@@ -176,6 +176,10 @@ public sealed record Trade
     public double Price { get; init; }
     public int Volume { get; init; }
     public string TradeTime { get; init; } = "";
+    /// <summary>交易所代码（查成交记录带；成交推送 2026-10-24 起同款填充）。</summary>
+    public string ExchangeId { get; init; } = "";
+    /// <summary>成交日期 yyyyMMdd。</summary>
+    public string TradeDate { get; init; } = "";
 
     public static Trade From(CtpTradeInfo t) => new()
     {
@@ -183,6 +187,7 @@ public sealed record Trade
         TradeId = t.TradeID, OrderSysID = t.OrderSysID,
         Direction = (Direction)t.Direction, OffsetFlag = (OffsetFlag)t.OffsetFlag,
         Price = t.Price, Volume = t.Volume, TradeTime = t.TradeTime,
+        ExchangeId = t.ExchangeID ?? "", TradeDate = t.TradeDate ?? "",
     };
 
     public override string ToString() =>

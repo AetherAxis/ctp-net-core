@@ -110,6 +110,10 @@ typedef struct CtpTradeInfo {
     int  Volume;
     char TradeTime[9];
     char TradingDay[9];
+    /* 2026-10-24 尾部追加（C# 镜像同步重编）：查成交记录需要交易所与成交日期，
+       成交推送同款填充——旧调用方零影响（只读前段字段）。 */
+    char ExchangeID[9];
+    char TradeDate[9];
 } CtpTradeInfo;
 
 /* 下单请求输入（wrapper 据此构建 CThostFtdcInputOrderField） */
@@ -163,6 +167,9 @@ typedef struct CtpTraderCallbacks {
     void (*OnRtnTrade)(void* ctx, const CtpTradeInfo* trade);
     void (*OnRspSettlementInfoConfirm)(void* ctx,
         const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
+    /* 2026-10-24 尾部追加：查成交应答（逐条回调 + isLast，语义同查报单） */
+    void (*OnRspQryTrade)(void* ctx, const CtpTradeInfo* trade,
+        const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
 } CtpTraderCallbacks;
 
 /* 生命周期 */
@@ -208,6 +215,10 @@ CTP_API int CtpTrader_OrderAction(CtpTraderHandle h,
     const char* instrumentId, int requestId);
 
 CTP_API int CtpTrader_QryOrder(CtpTraderHandle h,
+    const char* brokerId, const char* investorId,
+    const char* instrumentId, int requestId);
+/* 查成交（按合约过滤；instrumentId 传 NULL/"" 即全量——真前置按当日成交全返） */
+CTP_API int CtpTrader_QryTrade(CtpTraderHandle h,
     const char* brokerId, const char* investorId,
     const char* instrumentId, int requestId);
 /* 查合约（全量——真实前置返回全市场清单；本地前置返回上市表） */

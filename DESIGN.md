@@ -291,6 +291,19 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 | 原生产物 | `build/native/libctp_native.dylib`(x86_64) | 同架构重编（clang++ 直编；cmake 未安装），`-Wl,-rpath,@loader_path` + ad-hoc 签名 | `nm -gU` 有 `CtpTrader_OrderAction`；`otool -l` 有 LC_RPATH；下游 `dotnet build` 全绿、探针跑通 |
 | 兼容性 | — | 新参数是可选尾参（`null` 默认）⇒ 现有调用点无需改动 | 6 个受影响项目 `dotnet build` 零错误；`Ctp.Net.Front.Tests` 28 例（撤单/适配器）3s 通过 |
 
+### 5.2 导出查成交 `QueryTradeAsync`（2026-10-24）
+
+标准客户端的「成交明细」来源。改动：`ctp_api.h`（`CtpTradeInfo` 尾部追加 `ExchangeID`/`TradeDate`、
+`CtpTraderCallbacks` 尾部追加 `OnRspQryTrade`、新增 `CtpTrader_QryTrade`）、`TraderWrapper.cpp`（`OnRspQryTrade`
+覆写 + 请求装配 + 成交推送同步补两个字段）、`CtpStructs.cs`/`NativeMethods.cs` 镜像、`CtpTrader.QueryTradeAsync`、
+`Trade` 模型补 `ExchangeId`/`TradeDate`。
+
+| 项 | 说明 |
+|---|---|
+| 验证 | 真前置实抓：请求 op `E104E28002`、应答 op `E104E28003`（空表 17B），客户端 0 行立即返回 |
+| 同时修掉 | `OnQueryItem` 接受空记录（`nullptr`）→ 不入列但仍参与 `isLast` 收尾（此前空结果会被当成一条空行，或直接卡死） |
+| 反向发现 | 空记录回调**不能对所有查询都转发**：`QryOrder`/`QryInstrument` 转发后 SDK 给出无效记录指针 → C# 段错误（6.6GB dump）。这两个回调维持「吞掉」，见 ⑤ DESIGN |
+
 **已知残留**：真前置撤单成功**只推 `OnRtnOrder` '5'，不派发 `OnRspOrderAction`**，所以 `OrderActionAsync` 侧表现为
 15s 超时异常（单其实撤掉了）。本地前置会回 ㉒ ⇒ 本地测不出这段差异。若要消掉这个误报，需要在真前置上抓一帧
 撤单往返确认应答形态（或改为「收到 '5' 终态即视为成功」的容忍语义）。
