@@ -200,10 +200,12 @@ CTP_API int CtpTrader_QryInvestorPosition(CtpTraderHandle h,
 /* 下单 */
 CTP_API int CtpTrader_OrderInsert(CtpTraderHandle h,
     const CtpOrderInsertRequest* req, int requestId);
-/* 撤单（按 FrontID/SessionID/OrderRef 定位） */
+/* 撤单（按 FrontID/SessionID/OrderRef 定位；InstrumentID 必填——DCE 等交易所按「合约+报单引用」
+   索引撤单，缺 InstrumentID 时前置回 ErrorID 25「找不到相应报单」，2026-10-24 SimNow 实测） */
 CTP_API int CtpTrader_OrderAction(CtpTraderHandle h,
     const char* brokerId, const char* investorId,
-    int frontId, int sessionId, const char* orderRef, const char* exchangeId, int requestId);
+    int frontId, int sessionId, const char* orderRef, const char* exchangeId,
+    const char* instrumentId, int requestId);
 
 CTP_API int CtpTrader_QryOrder(CtpTraderHandle h,
     const char* brokerId, const char* investorId,

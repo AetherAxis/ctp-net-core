@@ -133,7 +133,8 @@ internal static class NativeMethods
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern int CtpTrader_OrderAction(IntPtr handle,
         string brokerId, string investorId,
-        int frontId, int sessionId, string orderRef, string exchangeId, int requestId);
+        int frontId, int sessionId, string orderRef, string exchangeId,
+        string? instrumentId, int requestId);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern int CtpTrader_QryOrder(IntPtr handle,

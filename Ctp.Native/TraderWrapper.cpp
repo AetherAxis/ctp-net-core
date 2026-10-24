@@ -353,7 +353,7 @@ CTP_API int CtpTrader_OrderInsert(CtpTraderHandle h, const CtpOrderInsertRequest
 CTP_API int CtpTrader_OrderAction(CtpTraderHandle h,
                           const char* brokerId, const char* investorId,
                           int frontId, int sessionId, const char* orderRef,
-                          const char* exchangeId, int requestId) {
+                          const char* exchangeId, const char* instrumentId, int requestId) {
     if (!h || !h->api) return -1;
     CThostFtdcInputOrderActionField f{};
     if (brokerId)   std::strncpy(f.BrokerID, brokerId, sizeof(f.BrokerID) - 1);
@@ -362,6 +362,8 @@ CTP_API int CtpTrader_OrderAction(CtpTraderHandle h,
     f.SessionID = sessionId;
     if (orderRef) std::strncpy(f.OrderRef, orderRef, sizeof(f.OrderRef) - 1);
     if (exchangeId) std::strncpy(f.ExchangeID, exchangeId, sizeof(f.ExchangeID) - 1);
+    // 2026-10-24 SimNow 实测：DCE 撤单缺 InstrumentID ⇒ 前置回 25「找不到相应报单」（跨会话撤单也一样失败）。
+    if (instrumentId) std::strncpy(f.InstrumentID, instrumentId, sizeof(f.InstrumentID) - 1);
     f.ActionFlag = '0';   // Delete（撤单）
     copyStr(f.UserID, investorId ? investorId : "", sizeof(f.UserID));
     return h->api->ReqOrderAction(&f, requestId);

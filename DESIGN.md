@@ -275,6 +275,26 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 | 原生产物（`build/native/`） | `libctp_native.dylib`(x86_64)、`ctp_native.dll`(x64)、`ios/libctp_native.a`、`thost*.dll`；无 `.so` | 同左，未重编 | `file` / `ls -lh` 核对；本次不改二进制 |
 | 文档（`DESIGN.md`） | 缺少升级记录与待升级项；导出函数写作 24 个；§2.3 称 Windows dll 待入库 | 补齐六节结构；按头文件改为 25 个；注明 Windows dll 已入库、Linux so 仍缺 | `grep -c '^CTP_API' ctp_api.h` = 25；`build/native/ctp_native.dll` 存在 |
 
+### 5.1 撤单请求补 `InstrumentID`（2026-10-24，真前置实测驱动）
+
+**问题**：在 SimNow 真前置上撤一张挂着的单，前置稳定回 `ErrorID=25「找不到相应报单」`——无论用下单那条会话还是新会话。
+真因不在会话、也不在 OrderRef：`CtpTrader_OrderAction` 的 `CThostFtdcInputOrderActionField` **从来没设 `InstrumentID`**。
+大商所等交易所按「合约 + 报单引用」索引委托，缺合约 ⇒ 找不到。
+
+**改动**：`ctp_api.h` / `TraderWrapper.cpp`（新增 `const char* instrumentId` 参数并写入 `f.InstrumentID`）、
+`NativeMethods` P/Invoke、`CtpTrader.OrderActionAsync(..., string? instrumentId = null, ct)`。下游 `CtpOrderRef`
+增可选 `InstrumentId`，`CtpSessionService` / `CtpBrokerage` 全链透传（撤单点用 `child.Request.InstrumentId`）。
+
+| 项 | 变更前 | 变更后 | 依据 / 验证 |
+|---|---|---|---|
+| 撤单请求 | 只有 Broker/Investor/FrontID/SessionID/OrderRef/ExchangeID | 追加 `InstrumentID`（必填语义） | SimNow 实测：补上前置立刻接受，两张遗留挂单 m2701@3400、m2703@3300 撤掉、账本活单归零 |
+| 原生产物 | `build/native/libctp_native.dylib`(x86_64) | 同架构重编（clang++ 直编；cmake 未安装），`-Wl,-rpath,@loader_path` + ad-hoc 签名 | `nm -gU` 有 `CtpTrader_OrderAction`；`otool -l` 有 LC_RPATH；下游 `dotnet build` 全绿、探针跑通 |
+| 兼容性 | — | 新参数是可选尾参（`null` 默认）⇒ 现有调用点无需改动 | 6 个受影响项目 `dotnet build` 零错误；`Ctp.Net.Front.Tests` 28 例（撤单/适配器）3s 通过 |
+
+**已知残留**：真前置撤单成功**只推 `OnRtnOrder` '5'，不派发 `OnRspOrderAction`**，所以 `OrderActionAsync` 侧表现为
+15s 超时异常（单其实撤掉了）。本地前置会回 ㉒ ⇒ 本地测不出这段差异。若要消掉这个误报，需要在真前置上抓一帧
+撤单往返确认应答形态（或改为「收到 '5' 终态即视为成功」的容忍语义）。
+
 ---
 
 ## 6. 待升级项

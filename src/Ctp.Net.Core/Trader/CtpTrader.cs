@@ -282,14 +282,17 @@ public sealed class CtpTrader : IDisposable
         return Task.FromResult(new OrderInsertResult(orderRef, reqId));
     }
 
+    /// <param name="instrumentId">合约代码——**必填**：DCE 等交易所按「合约 + 报单引用」索引委托，
+    /// 缺它前置回 ErrorID 25「找不到相应报单」（2026-10-24 SimNow 实测，跨会话撤单同样失败）。</param>
     public async Task OrderActionAsync(string brokerId, string investorId,
-        int frontId, int sessionId, string orderRef, string exchangeId, CancellationToken ct = default)
+        int frontId, int sessionId, string orderRef, string exchangeId,
+        string? instrumentId = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
         var reqId = NextRequestId();
         var tcs = RegisterPending(reqId);
         int rc = NativeMethods.CtpTrader_OrderAction(
-            _handle, brokerId, investorId, frontId, sessionId, orderRef, exchangeId, reqId);
+            _handle, brokerId, investorId, frontId, sessionId, orderRef, exchangeId, instrumentId, reqId);
         if (rc != 0) throw new CtpException($"ReqOrderAction 发送失败 rc={rc}");
         var rsp = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
         if (rsp.Info.ErrorID != 0)
