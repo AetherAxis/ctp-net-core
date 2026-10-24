@@ -215,6 +215,17 @@ public struct CtpTradeInfo
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 9)] public string TradeDate;
 }
 
+/// <summary>交易所记录（与 ctp_api.h 的 CtpExchangeInfo 严格同序同宽）。</summary>
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+public struct CtpExchangeInfo
+{
+    // 名称是 GBK（"大连商品交易所"），必须按原始字节取回再自行解码——ByValTStr 会按 ANSI/UTF-8 解成乱码
+    // （与 CtpOrderInfo.StatusMsg 同款处理）。
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)] public byte[] ExchangeID;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 61)] public byte[] ExchangeName;
+    public byte ExchangeProperty;
+}
+
 /// <summary>结算单记录（与 ctp_api.h 的 CtpSettlementInfo 严格同序同宽）。
 /// <para><see cref="Content"/> 是变长大文本指针（GBK），只在该回调期间有效 —— 调用方必须在回调内立即解码成托管串。</para></summary>
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]

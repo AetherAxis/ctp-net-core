@@ -218,6 +218,17 @@ public:
         }
         owner_->cb.OnRspQryTrade(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
     }
+    void OnRspQryExchange(CThostFtdcExchangeField* pField,
+                          CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
+        if (!owner_->cb.OnRspQryExchange) return;
+        CtpExchangeInfo info{};
+        if (pField) {
+            copyStr(info.ExchangeID, pField->ExchangeID, sizeof(info.ExchangeID));
+            copyStr(info.ExchangeName, pField->ExchangeName, sizeof(info.ExchangeName));
+            info.ExchangeProperty = pField->ExchangeProperty;
+        }
+        owner_->cb.OnRspQryExchange(owner_->ctx, pField ? &info : nullptr, pRspInfo, nRequestID, bIsLast);
+    }
     void OnRspQrySettlementInfo(CThostFtdcSettlementInfoField* pField,
                                 CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) override {
         if (!owner_->cb.OnRspQrySettlementInfo) return;
@@ -441,6 +452,13 @@ CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId,
     CThostFtdcQryInstrumentField f{};
     if (instrumentId) std::strncpy(f.InstrumentID, instrumentId, sizeof(f.InstrumentID) - 1);
     return h->api->ReqQryInstrument(&f, requestId);
+}
+
+CTP_API int CtpTrader_QryExchange(CtpTraderHandle h, const char* exchangeId, int requestId) {
+    if (!h || !h->api) return -1;
+    CThostFtdcQryExchangeField f{};
+    if (exchangeId) std::strncpy(f.ExchangeID, exchangeId, sizeof(f.ExchangeID) - 1);
+    return h->api->ReqQryExchange(&f, requestId);
 }
 
 CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,

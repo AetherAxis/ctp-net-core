@@ -50,6 +50,7 @@ public sealed class CtpTrader : IDisposable
     private readonly CtpTraderCallbacks.OnRspQryOrderDelegate _dQryOrder;
     private readonly CtpTraderCallbacks.OnRspQryTradeDelegate _dQryTrade;
     private readonly CtpTraderCallbacks.OnRspQrySettlementInfoDelegate _dQrySettlementInfo;
+    private readonly CtpTraderCallbacks.OnRspQryExchangeDelegate _dQryExchange;
 
 
     private readonly CtpTraderCallbacks.OnRspQryInstrumentDelegate _dQryInstrument;
@@ -88,6 +89,7 @@ public sealed class CtpTrader : IDisposable
         _dQryOrder = OnRspQryOrderCb;
         _dQryTrade = OnRspQryTradeCb;
         _dQrySettlementInfo = OnRspQrySettlementInfoCb;
+        _dQryExchange = OnRspQryExchangeCb;
         _dQryInstrument = OnRspQryInstrumentCb;
         _dRspOrderInsert = OnRspOrderInsertCb;
         _dErrRtnOrderInsert = OnErrRtnOrderInsertCb;
@@ -108,6 +110,7 @@ public sealed class CtpTrader : IDisposable
             OnRspQryOrder = Marshal.GetFunctionPointerForDelegate(_dQryOrder),
             OnRspQryTrade = Marshal.GetFunctionPointerForDelegate(_dQryTrade),
             OnRspQrySettlementInfo = Marshal.GetFunctionPointerForDelegate(_dQrySettlementInfo),
+            OnRspQryExchange = Marshal.GetFunctionPointerForDelegate(_dQryExchange),
             OnRspQryInstrument = Marshal.GetFunctionPointerForDelegate(_dQryInstrument),
             OnRspOrderInsert = Marshal.GetFunctionPointerForDelegate(_dRspOrderInsert),
             OnErrRtnOrderInsert = Marshal.GetFunctionPointerForDelegate(_dErrRtnOrderInsert),
@@ -356,6 +359,19 @@ public sealed class CtpTrader : IDisposable
         return items.OfType<SettlementInfo>().OrderBy(x => x.SequenceNo).ToList();
     }
 
+    /// <summary>查交易所（<c>ReqQryExchange</c>）：全量小表（各交易所代码/名称/属性），一次查完。</summary>
+    public async Task<IReadOnlyList<Exchange>> QueryExchangeAsync(string? exchangeId = null, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        var reqId = NextRequestId();
+        CountQuery();
+        var tcs = RegisterQuery(reqId);
+        int rc = NativeMethods.CtpTrader_QryExchange(_handle, exchangeId ?? "", reqId);
+        if (rc != 0) throw new CtpException($"ReqQryExchange 发送失败 rc={rc}");
+        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        return items.OfType<Exchange>().ToList();
+    }
+
     private QueryCollector RegisterQuery(int reqId)
     {
         var c = new QueryCollector();
@@ -463,6 +479,25 @@ public sealed class CtpTrader : IDisposable
         self.OnQueryItem(requestId, t, i, isLast);
     }
 
+    private void OnRspQryExchangeCb(IntPtr ctx, IntPtr exchange, IntPtr info, int requestId, bool isLast)
+    {
+        var self = Self(ctx);
+        var i = info != IntPtr.Zero ? Marshal.PtrToStructure<RspInfoField>(info) : default;
+        Exchange? ex = null;
+        if (exchange != IntPtr.Zero)
+        {
+            var raw = Marshal.PtrToStructure<CtpExchangeInfo>(exchange);
+            ex = new Exchange
+            {
+                ExchangeId = DecodeGbkZ(raw.ExchangeID),
+                ExchangeName = DecodeGbkZ(raw.ExchangeName),
+                PropertyRaw = raw.ExchangeProperty,
+            };
+        }
+        RealOut.WriteLine($"[ctp-trader] 交易所响应 ErrorID={i.ErrorID} isLast={isLast} {ex?.ExchangeId} {ex?.ExchangeName}");
+        self.OnQueryItem(requestId, ex, i, isLast);
+    }
+
     private void OnRspQrySettlementInfoCb(IntPtr ctx, IntPtr settlement, IntPtr info, int requestId, bool isLast)
     {
         var self = Self(ctx);
@@ -486,6 +521,15 @@ public sealed class CtpTrader : IDisposable
         }
         RealOut.WriteLine($"[ctp-trader] 结算单响应 ErrorID={i.ErrorID} isLast={isLast} seq={si?.SequenceNo} len={si?.Content.Length}");
         self.OnQueryItem(requestId, si, i, isLast);
+    }
+
+    /// <summary>GBK 定宽字节数组 → 字符串（截到首个 NUL；ASCII/中文混排都按 GB18030 解）。</summary>
+    private static string DecodeGbkZ(byte[]? raw)
+    {
+        if (raw is null || raw.Length == 0) return "";
+        var n = Array.IndexOf(raw, (byte)0);
+        if (n < 0) n = raw.Length;
+        return n == 0 ? "" : Encoding.GetEncoding("GB18030").GetString(raw, 0, n);
     }
 
     private static byte[] ReadBytes(IntPtr p, int len)

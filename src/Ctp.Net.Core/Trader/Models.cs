@@ -165,6 +165,16 @@ public sealed record Order
         $"成{VolumeTraded} 状态={(char)OrderStatusRaw} {StatusMsg} ref={OrderRef}";
 }
 
+/// <summary>交易所（查交易所 <c>ReqQryExchange</c>）。<see cref="PropertyRaw"/> 真前置实测见 '0'/'1'（含义未逆向）。</summary>
+public sealed record Exchange
+{
+    public string ExchangeId { get; init; } = "";
+    public string ExchangeName { get; init; } = "";
+    public byte PropertyRaw { get; init; }
+
+    public override string ToString() => $"{ExchangeId} {ExchangeName} ({(char)PropertyRaw})";
+}
+
 /// <summary>结算单记录（查结算单 <c>ReqQrySettlementInfo</c>）。真前置把结算单正文切成若干条记录下发，
 /// <see cref="SequenceNo"/> 递增；<see cref="Content"/> 已按 GB18030 解码成托管串。</summary>
 public sealed record SettlementInfo

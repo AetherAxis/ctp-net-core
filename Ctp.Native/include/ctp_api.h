@@ -116,6 +116,13 @@ typedef struct CtpTradeInfo {
     char TradeDate[9];
 } CtpTradeInfo;
 
+/* 交易所记录（2026-10-24 新增：查交易所 ReqQryExchange——全量小表，逐条回调）。 */
+typedef struct CtpExchangeInfo {
+    char ExchangeID[9];
+    char ExchangeName[61];
+    char ExchangeProperty;   /* 真前置实测见 '0'/'1'（含义未逆向） */
+} CtpExchangeInfo;
+
 /* 结算单记录（2026-10-24 新增：查结算单 ReqQrySettlementInfo）。
    Content 是变长大文本（CTP 侧 char[3601]，GBK）——用 (指针,长度) 传，C# 侧按 ContentLen 解码；
    指针只在该回调期间有效（wrapper 直接指向 SDK 的 pField->Content，不拷贝）。 */
@@ -186,6 +193,9 @@ typedef struct CtpTraderCallbacks {
     /* 2026-10-24 尾部追加：查结算单应答（pField 为 NULL 即 isLast 收尾——真前置当日无结算单时就是这样） */
     void (*OnRspQrySettlementInfo)(void* ctx, const CtpSettlementInfo* settlement,
         const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
+    /* 2026-10-24 尾部追加：查交易所应答（逐条回调 + isLast） */
+    void (*OnRspQryExchange)(void* ctx, const CtpExchangeInfo* exchange,
+        const struct CThostFtdcRspInfoField* info, int requestId, bool isLast);
 } CtpTraderCallbacks;
 
 /* 生命周期 */
@@ -239,6 +249,8 @@ CTP_API int CtpTrader_QryTrade(CtpTraderHandle h,
     const char* instrumentId, int requestId);
 /* 查合约（全量——真实前置返回全市场清单；本地前置返回上市表） */
 CTP_API int CtpTrader_QryInstrument(CtpTraderHandle h, const char* instrumentId, int requestId);
+/* 查交易所（exchangeId 传 NULL/"" 即全量——真前置返回全部交易所） */
+CTP_API int CtpTrader_QryExchange(CtpTraderHandle h, const char* exchangeId, int requestId);
 /* 查结算单（tradingDay 传 NULL/"" 即查当日；真前置按 (broker,investor,tradingDay) 过滤） */
 CTP_API int CtpTrader_QrySettlementInfo(CtpTraderHandle h,
     const char* brokerId, const char* investorId, const char* tradingDay, int requestId);
