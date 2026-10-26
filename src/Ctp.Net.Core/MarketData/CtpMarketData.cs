@@ -13,6 +13,14 @@ public sealed class CtpMarketData : IDisposable
     private static readonly TextWriter RealOut =
         TextWriter.Synchronized(new StreamWriter(Console.OpenStandardOutput(), Console.OutputEncoding) { AutoFlush = true });
 
+    /// <summary>
+    /// 逐笔 tick 控制台日志开关（2026-10-26 日志降噪）：默认关——bot 直连远程前置时行情活跃 ~2900 笔/s，
+    /// 逐笔打印日志失控。调试要看得设 <c>AETHER_CTP_TICK_TRACE=1</c>（bot 与 console 的 [tick] 行同此开关，
+    /// 一个变量开两处）。订阅/登录/连接事件不受此开关（低频，运维定位用）。
+    /// </summary>
+    public static bool TickTrace { get; } =
+        Environment.GetEnvironmentVariable("AETHER_CTP_TICK_TRACE") is "1" or "true";
+
     // 注册 GB18030 编码提供程序（解码 CTP 的 GBK 中文报文）。与 CtpTrader 共用，任一被使用即注册。
     static CtpMarketData()
     {
@@ -175,7 +183,11 @@ public sealed class CtpMarketData : IDisposable
         var self = Self(ctx);
         if (field == IntPtr.Zero) return;
         var f = Marshal.PtrToStructure<DepthMarketDataField>(field);
-        RealOut.WriteLine($"[ctp-md] Tick {f.InstrumentID} last={f.LastPrice} bid={f.BidPrice1}x{f.BidVolume1} ask={f.AskPrice1}x{f.AskVolume1} vol={f.Volume} {f.UpdateTime}.{f.UpdateMillisec}");
+        // 逐笔 tick 日志默认关（2026-10-26 日志降噪）：真实部署下 bot 直连远程前置（无同值去重的旧构建）
+        // 行情活跃时 ~2900 笔/s，逐笔打印会把 bot 日志刷成每天数百 MB——调试要看得设 AETHER_CTP_TICK_TRACE=1。
+        // 订阅/退订响应与登录/连接事件照常打印（低频、运维定位用）。
+        if (TickTrace)
+            RealOut.WriteLine($"[ctp-md] Tick {f.InstrumentID} last={f.LastPrice} bid={f.BidPrice1}x{f.BidVolume1} ask={f.AskPrice1}x{f.AskVolume1} vol={f.Volume} {f.UpdateTime}.{f.UpdateMillisec}");
         self.TickReceived?.Invoke(self, TickData.From(f));
     }
 

@@ -322,3 +322,13 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 | 6 | P2 | 日志不可插拔，每 tick 同步写 stdout | `CtpTrader.cs:22` 与 `CtpMarketData.cs:13` 的静态 `RealOut`；`OnRtnDepthMarketDataCb` 每收到一帧就 `RealOut.WriteLine`（`CtpMarketData.cs:178`）；无 `ILogger`、无级别、无采样 | 注入可选日志回调（默认仍走 `RealOut`），Tick 日志默认关闭或按采样率输出；保留当前排查开关 | 改变现场诊断习惯；回调内异步日志要防队列积压；API 面增加 |
 | 7 | P2 | macOS 仅 x86_64 产物，且 csproj 不按 RID 过滤 | `file build/native/libctp_native.dylib` = `Mach-O 64-bit ... x86_64`；`bin/Debug/net10.0/` 同时出现 `libctp_native.dylib`、`ctp_native.dll`、`thost*.dll`，说明所有平台二进制被平铺复制；`Ctp.Net.Core.csproj:15` 的 glob 不含 RID 条件 | 在 Apple Silicon 上产 arm64 或 universal 并验证；包化时改为 `runtimes/<rid>/native` + RID 条件复制；publish 后按 RID 校验文件集，避免把 PE 文件塞进 macOS 包 | 需要双架构构建矩阵；包体积变化；Rosetta 与原生 arm64 的回归都要跑 |
 | 8 | P3 | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 25 个（`grep -c '^CTP_API'` = 25）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
+
+### 5.3 逐笔 tick 日志默认关（2026-10-26 日志降噪）
+
+**问题**：`CtpMarketData` 逐笔打印 `[ctp-md] Tick …`——调试期有用；真实部署后 bot 直连远程前置
+（服务器旧构建无同值快照去重），行情活跃 ~2900 笔/s，两条逐笔日志（② 这里 + ⑧ console 的 `[tick]`）
+把 bot 日志刷成每天数百 MB（实测单 bot 半天 300MB+）。
+
+**改法**：逐笔行门控到 `CtpMarketData.TickTrace`——env `AETHER_CTP_TICK_TRACE=1`（或 "true"）才打印，
+默认关。⑧ console 的 `[tick]` 行接同一开关（REPL `tick on` 运行期开不受影响）。订阅/退订响应、
+登录/连接事件照常打印（低频、运维定位面）。行为零改动（纯日志）。
