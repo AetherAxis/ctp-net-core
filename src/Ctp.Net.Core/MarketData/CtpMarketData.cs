@@ -188,8 +188,66 @@ public sealed class CtpMarketData : IDisposable
         // 订阅/退订响应与登录/连接事件照常打印（低频、运维定位用）。
         if (TickTrace)
             RealOut.WriteLine($"[ctp-md] Tick {f.InstrumentID} last={f.LastPrice} bid={f.BidPrice1}x{f.BidVolume1} ask={f.AskPrice1}x{f.AskVolume1} vol={f.Volume} {f.UpdateTime}.{f.UpdateMillisec}");
-        self.TickReceived?.Invoke(self, TickData.From(f));
+
+        var tick = TickData.From(f);
+        if (self.SuppressDuplicate(tick)) return;
+        self.TickReceived?.Invoke(self, tick);
     }
+
+    // —— 同值 tick 去重（2026-10-29 定案）——
+
+    /// <summary>每合约最后一条**已投递**的 tick（去重比较基准）。</summary>
+    private readonly Dictionary<string, TickData> _lastDelivered = new(StringComparer.Ordinal);
+    private readonly object _dedupeLock = new();
+    private int _dupesSuppressed;
+    private int _dupesLastReported;
+    private DateTime _dupesLastReportAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 连续同值 tick 丢弃，返回 true 表示本条被丢弃。
+    /// <para>
+    /// 为什么在**回调入口**去重：2026-10-29 服务器双 bot 事故实测，客户端 10 秒内被投递 282 万次 tick 回调，
+    /// 而这些回调的 (last,bid,ask,量) 只有一种组合——同一条行情被反复重投；同期前置日志只涨 13 B/s，
+    /// 说明前置并没有往外推（前置按帧字节去重），重复发生在原生 SDK 封装层与回调之间。
+    /// 这层重复会把下游全部放大：bot 日志每 200 笔打一行 ⇒ 1400 行/秒 ⇒ 单 bot 8.6 GB/天（撑爆磁盘），
+    /// 桌面端每 tick 一次 <c>Dispatcher.UIThread.Post</c> ⇒ 主线程被淹 ⇒ 界面假死。
+    /// </para>
+    /// <para>
+    /// <b>比较时不看 <c>UpdateTime</c>/<c>UpdateMillisec</c></b>：重投的特征就是"时间在变、行情内容没变"，
+    /// 带上时间字段等于完全不起作用。只看对策略/展示有意义的字段（价、量、持仓、成交额）。
+    /// 只挡**连续**同值（A→B→A 时 A 会正常通过），不会吞掉任何真实变化。
+    /// </para>
+    /// </summary>
+    private bool SuppressDuplicate(TickData tick)
+    {
+        lock (_dedupeLock)
+        {
+            if (_lastDelivered.TryGetValue(tick.InstrumentId, out var prev) && SameContent(prev, tick))
+            {
+                _dupesSuppressed++;
+                // 限频上报（最多 10s 一条，量小到可以忽略）：没有这行就无从判断风暴是否复发。
+                var now = DateTime.UtcNow;
+                if ((now - _dupesLastReportAt).TotalSeconds >= 10 && _dupesSuppressed > _dupesLastReported)
+                {
+                    RealOut.WriteLine($"[ctp-md] 同值 tick 去重 {_dupesSuppressed - _dupesLastReported} 条/10s（累计 {_dupesSuppressed}）"
+                        + "——非零说明上游在重复投递，排查客户端会话重建/原生层重放");
+                    _dupesLastReported = _dupesSuppressed;
+                    _dupesLastReportAt = now;
+                }
+                return true;
+            }
+            _lastDelivered[tick.InstrumentId] = tick;
+            return false;
+        }
+    }
+
+    private static bool SameContent(in TickData a, in TickData b) =>
+        a.LastPrice == b.LastPrice
+        && a.Volume == b.Volume
+        && a.OpenInterest == b.OpenInterest
+        && a.Turnover == b.Turnover
+        && a.BidPrice == b.BidPrice && a.BidVolume == b.BidVolume
+        && a.AskPrice == b.AskPrice && a.AskVolume == b.AskVolume;
 
     public void Dispose()
     {
