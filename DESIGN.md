@@ -343,14 +343,14 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 
 | # | 优先级 | 项目 | 现状证据 | 建议 | 代价 / 风险 |
 |---|---|---|---|---|---|
-| 1 | P1 | 无测试项目，SDK wrapper 不可测、ABI 无自动校验 | `ctp-net-core.slnx` 只有 1 个项目，仓内无 `tests/`；`MIGRATION.md` ② 记录「未见 tests 项目」；`NativeMethods`/`MdNativeMethods` 是 `internal static class` 的 `extern` 方法，被 `CtpTrader` 直接调用（`CtpTrader.cs:113/224`），没有注入点；POD 靠手写镜像，`CtpOrderInfo` 甚至没有显式 `[StructLayout]`（`CtpStructs.cs:178`）；CI 只有 build（`ci.yml:36-38`） | 先给纯逻辑建 `tests/Ctp.Net.Core.Tests`：reqId 分配器（字母表跳过、回卷、in-flight 避让）、静默期收集器、GBK 解码、`From()` 映射；再引入 internal 接缝（`ICtpNativeApi`）或 stub `ctp_native`（假实现 25 个导出）测门面；加 ABI 钉子（`Marshal.SizeOf`/`OffsetOf` 对照 C 侧常量）；CI 加 `dotnet test`，native 缺失时跳过 P/Invoke 组 | 1-2 天；接缝重构触及热点路径；stub 必须与 `ctp_api.h` 同步维护；Linux CI 需先编 native 或只跑纯托管组 |
+| 1 | **部分完成（2026-10-30）** | 无测试项目，SDK wrapper 不可测、ABI 无自动校验 | `ctp-net-core.slnx` 只有 1 个项目，仓内无 `tests/`；`MIGRATION.md` ② 记录「未见 tests 项目」；`NativeMethods`/`MdNativeMethods` 是 `internal static class` 的 `extern` 方法，被 `CtpTrader` 直接调用（`CtpTrader.cs:113/224`），没有注入点；POD 靠手写镜像，`CtpOrderInfo` 甚至没有显式 `[StructLayout]`（`CtpStructs.cs:178`）；CI 只有 build（`ci.yml:36-38`） | 先给纯逻辑建 `tests/Ctp.Net.Core.Tests`：reqId 分配器（字母表跳过、回卷、in-flight 避让）、静默期收集器、GBK 解码、`From()` 映射；再引入 internal 接缝（`ICtpNativeApi`）或 stub `ctp_native`（假实现 25 个导出）测门面；加 ABI 钉子（`Marshal.SizeOf`/`OffsetOf` 对照 C 侧常量）；CI 加 `dotnet test`，native 缺失时跳过 P/Invoke 组 | 1-2 天；接缝重构触及热点路径；stub 必须与 `ctp_api.h` 同步维护；Linux CI 需先编 native 或只跑纯托管组 |
 | 2 | P1 | Linux 兜底产物缺失，三平台可用性不完整 | `build/native/` 无 `libctp_native.so`（`ls` 仅有 dylib/dll/a）；`ctp-sdk/linux-x64/` 已有 `thost*.so`；`MIGRATION.md` ⑤ 明确下游 E2E 留本地的原因就是「Linux .so 未进 build/native」；旧文档 §3.3 仍是「待验证」 | 在 Linux 上跑一次 `Ctp.Native` CMake 构建并提交 `libctp_native.so`；CI 增加 native job：编译 + `nm -D` 数出 25 个 `Ctp*` 符号 + `ctypes.CDLL` dlopen 冒烟；顺带验证 `$ORIGIN` 能解析 `thost*.so` | 二进制入库增加体积；glibc 版本决定可移植下限；需要长期维护一台 Linux 构建环境 |
 | 3 | P1 | 未包化，原生资产交付责任仍在消费方 | 本仓 csproj 无 `PackageId`/`IsPackable`/`<None Pack>` 等元数据；消费者全部是 `ProjectReference`（如 `ctp-net-client.csproj` 直引本仓 `src/Ctp.Net.Core/Ctp.Net.Core.csproj`）；`nuget.config` 注释写明 GitHub 源是「跨仓 ProjectReference 切 PackageReference 后使用」；`MIGRATION.md` §9.2 要求 Core 用包/构建资产交付完整原生依赖，消费方无须知道 SDK 路径 | 按 RID 打包：`runtimes/<rid>/native/` 放 wrapper + `thost*`，macOS framework 用 `buildTransitive` target 或随包复制；按 §9.2 建独立临时消费项目，从产物验证启动与交易/行情能力，再切消费者 | 跨平台原生打包复杂（RID、framework symlink、macOS 签名）；版本组合与发布流程要建立；短期会与 ProjectReference 并存 |
-| 4 | P2 | 会话生命周期与请求表清理不完整，Md 防护弱于 Trader | `CtpTrader.Dispose` 只调 `Release` + `Free`，不 `Join`（`CtpTrader.cs:520-527`），而 `TraderWrapper.cpp:221` 注释要求「先 Join 退出后再 Release」；`RegisterPending` 的条目只由 `TryCompletePending` 移除，`WaitAsync` 超时后仍留在 `_pending`（`CtpTrader.cs:320-332`）；`CtpMarketData.NextRequestId` 只是 `Interlocked.Increment`（`CtpMarketData.cs:77`），不跳过 SDK 转义字节，也没有查询表/超时清理 | 提供 `DisposeAsync`/`Join(timeout)` 并规定「不得在回调线程调用」；超时路径主动移除 pending；把 reqId 分配器抽成共用组件给 Md 复用；补一个生命周期状态机 | 行为变更，Join 可能阻塞；若在回调线程误用会死锁；需要下游宿主配合调整释放顺序 |
+| 4 | **部分完成（2026-10-30）** | 会话生命周期与请求表清理不完整，Md 防护弱于 Trader | `CtpTrader.Dispose` 只调 `Release` + `Free`，不 `Join`（`CtpTrader.cs:520-527`），而 `TraderWrapper.cpp:221` 注释要求「先 Join 退出后再 Release」；`RegisterPending` 的条目只由 `TryCompletePending` 移除，`WaitAsync` 超时后仍留在 `_pending`（`CtpTrader.cs:320-332`）；`CtpMarketData.NextRequestId` 只是 `Interlocked.Increment`（`CtpMarketData.cs:77`），不跳过 SDK 转义字节，也没有查询表/超时清理 | 提供 `DisposeAsync`/`Join(timeout)` 并规定「不得在回调线程调用」；超时路径主动移除 pending；把 reqId 分配器抽成共用组件给 Md 复用；补一个生命周期状态机 | 行为变更，Join 可能阻塞；若在回调线程误用会死锁；需要下游宿主配合调整释放顺序 |
 | 5 | P2 | 协议/交易语义常量硬编码，无法按柜台调整 | `TraderWrapper.cpp:337-349` 固定 `UserID = InvestorID`、`CombHedgeFlag='1'`、`VolumeCondition='1'`、`MinVolume=1`、`ContingentCondition='1'`、`ForceCloseReason='0'`；`CtpTrader.cs:65` 固定静默期 150ms，登录/撤单 15s、查询 30s（`CtpTrader.cs:164/172/226`）；采集缓冲固定 `char[273]` | 抽 `CtpOptions`（超时、静默期、默认投机标志、成交量条件、采集缓冲）并保留当前默认值；在 XML 注释标明对应 CTP 字段语义；用单测锁默认值 | 公共 API 面扩张；不同柜台（SimNow/生产/本地前置）行为差异需实测后才能改默认；抽象过度会让调用点变复杂 |
 | 6 | P2 | 日志不可插拔，每 tick 同步写 stdout | `CtpTrader.cs:22` 与 `CtpMarketData.cs:13` 的静态 `RealOut`；`OnRtnDepthMarketDataCb` 每收到一帧就 `RealOut.WriteLine`（`CtpMarketData.cs:178`）；无 `ILogger`、无级别、无采样 | 注入可选日志回调（默认仍走 `RealOut`），Tick 日志默认关闭或按采样率输出；保留当前排查开关 | 改变现场诊断习惯；回调内异步日志要防队列积压；API 面增加 |
 | 7 | P2 | macOS 仅 x86_64 产物，且 csproj 不按 RID 过滤 | `file build/native/libctp_native.dylib` = `Mach-O 64-bit ... x86_64`；`bin/Debug/net10.0/` 同时出现 `libctp_native.dylib`、`ctp_native.dll`、`thost*.dll`，说明所有平台二进制被平铺复制；`Ctp.Net.Core.csproj:15` 的 glob 不含 RID 条件 | 在 Apple Silicon 上产 arm64 或 universal 并验证；包化时改为 `runtimes/<rid>/native` + RID 条件复制；publish 后按 RID 校验文件集，避免把 PE 文件塞进 macOS 包 | 需要双架构构建矩阵；包体积变化；Rosetta 与原生 arm64 的回归都要跑 |
-| 8 | P3 | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 29 个（`grep -c '^CTP_API'` = 29，2026-10-30 复核；此格早先写的 25 是当时口径）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
+| 8 | ~~P3~~ **已关闭（2026-10-30）** | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 29 个（`grep -c '^CTP_API'` = 29，2026-10-30 复核；此格早先写的 25 是当时口径）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
 
 ### 5.5 在途请求回收 + reqId 饿死保护（2026-10-29）
 
@@ -403,8 +403,8 @@ ABI 钉子（`Marshal.SizeOf`/`OffsetOf` 对照 C 侧常量）也留待下次改
    线程要等 Release 才会退出，先 Join 会永久阻塞。
 
 ⇒ 正确修法在原生侧：拆开 ABI（`Release` 只停不删、另加 `Destroy` 回收 handle），需要重编三平台产物。
-本机只有 macOS 工具链，而 Windows 产物本身就落后（见 `build/native/MANIFEST.md` §2）——
-所以这一项记为**被原生 ABI 阻塞**，不是「没时间做」。`TraderWrapper.cpp` 里那句
+这一项记为**被原生 ABI 阻塞**，不是「没时间做」——拆 ABI 会让三个平台的原生产物同时换代，
+而 Linux 产物本来就还没有（§6 #2），等于一次性把三份都押上。`TraderWrapper.cpp` 里那句
 「调用方须先 Join 退出后再 Release」已按上述结论改正；C# 侧两个 `*_Join` 声明加了
 `[Obsolete(..., error: true)]`，让误用直接编译失败而不是运行期崩进程。
 
@@ -414,3 +414,8 @@ ABI 钉子（`Marshal.SizeOf`/`OffsetOf` 对照 C 侧常量）也留待下次改
 缺的 5 个正是 10-24 才加进 wrapper 的查询（`QryTrade`/`QryExchange`/`QryInvestor`/`QrySettlementInfo`/`QryInstrument`）。
 Windows 侧调用它们会抛 `EntryPointNotFoundException`（已知调用点：`Aether.CtpConsole` 的查合约）。
 这正是「产物与源码不同步」的实例，也是这个问题第一次被自动发现。
+
+**同日已闭合**：在部署机（Win Server 2022 + MSVC 14.44 + VS 自带 CMake）上重编并提交，
+`22016B / 24 导出` → `25600B / 29 导出`，`scripts/native-known-missing.txt` 清空，`check-native.sh` 全部一致。
+⇒ 「本机没有 Windows 工具链」这个长期借口不成立了——**随便哪台 Windows 都能重编**，
+下次再出现产物落后，就地编一次即可，不必等「有 Windows 环境的人」。
