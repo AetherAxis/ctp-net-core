@@ -133,8 +133,11 @@ C++ SPI 回调 → C++ wrapper（flat C ABI） → C# P/Invoke → 面向对象 
   登录/撤单超时 15s，查询超时 30s。
 - **理由**：本地前置的多行 tag 应答每帧都是 `isLast=true`，首个 `isLast` 立即完成会丢掉同一批
   后续行（2026-10-05 探针实证）；静默期同时兼容真实前置的 `false..true` 序列。
-- **代价**：每个多行查询固定多 150ms 延迟；150ms 是经验值；`WaitAsync` 超时不会主动移除
-  `_pending` 条目（§6 第 4 项）。
+- **代价**：每个多行查询固定多 150ms 延迟；150ms 是经验值。
+- **超时回收（2026-10-29 修）**：`WaitPendingAsync` / `WaitQueryAsync` 统一用 `try/finally`，
+  超时或取消时**一定**从 `_pending`/`_queryPending` 移除条目（并 dispose `CompletionTimer`）。
+  旧实现在超时路径直接抛，条目留在字典里 —— 既是内存泄漏，也会因为 `NextRequestId`
+  要避开 in-flight id 而持续吃掉可用的 234 个 id。
 
 ### 3.8 reqId 规避 SDK 转义字节与回卷冲突
 
@@ -144,6 +147,10 @@ C++ SPI 回调 → C++ wrapper（flat C ABI） → C# P/Invoke → 面向对象 
   是定宽 1 字节，应答无法派发 → 查询挂死 → `rc=-2` → 4097 周期断连（2026-10 实测）。
 - **代价**：可用 id 只有 234 个，做市商级高频会话会快速回卷；回卷时还要避开 in-flight，
   请求速率过高时余量变薄。行情侧未采用同一策略（§6 第 4 项）。
+- **饿死保护（2026-10-29 加）**：`NextRequestId` 最多试 2048 次；仍取不到 id 时抛
+  `InvalidOperationException`，消息里带上 `_pending`/`_queryPending` 的条目数。
+  旧实现是 `while` 死循环——一旦 in-flight 条目没被回收（上一节的泄漏），
+  整个下单线程会在这里静默自旋，表现为「进程活着但不下单」，最难排查的一类。
 
 ### 3.9 回调诊断写真实 stdout
 
@@ -340,6 +347,26 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 | 6 | P2 | 日志不可插拔，每 tick 同步写 stdout | `CtpTrader.cs:22` 与 `CtpMarketData.cs:13` 的静态 `RealOut`；`OnRtnDepthMarketDataCb` 每收到一帧就 `RealOut.WriteLine`（`CtpMarketData.cs:178`）；无 `ILogger`、无级别、无采样 | 注入可选日志回调（默认仍走 `RealOut`），Tick 日志默认关闭或按采样率输出；保留当前排查开关 | 改变现场诊断习惯；回调内异步日志要防队列积压；API 面增加 |
 | 7 | P2 | macOS 仅 x86_64 产物，且 csproj 不按 RID 过滤 | `file build/native/libctp_native.dylib` = `Mach-O 64-bit ... x86_64`；`bin/Debug/net10.0/` 同时出现 `libctp_native.dylib`、`ctp_native.dll`、`thost*.dll`，说明所有平台二进制被平铺复制；`Ctp.Net.Core.csproj:15` 的 glob 不含 RID 条件 | 在 Apple Silicon 上产 arm64 或 universal 并验证；包化时改为 `runtimes/<rid>/native` + RID 条件复制；publish 后按 RID 校验文件集，避免把 PE 文件塞进 macOS 包 | 需要双架构构建矩阵；包体积变化；Rosetta 与原生 arm64 的回归都要跑 |
 | 8 | P3 | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 25 个（`grep -c '^CTP_API'` = 25）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
+
+### 5.5 在途请求回收 + reqId 饿死保护（2026-10-29）
+
+前置侧把「断连遗留动作」做成登录对账（见 `../../ctp-net-front/DESIGN.md` §3.8）之后，
+客户端这层的对应缺陷变成必修：原来 12 个「等应答/等查询」的点全是 `await tcs.Task.WaitAsync(超时)`，
+**超时即抛、条目不退**。累积效果是 `_pending` 只增不减 ⇒ 可用 reqId 越来越少 ⇒
+最终 `NextRequestId` 在 `while` 里等不到空闲 id 而自旋。
+
+- 落点：`CtpTrader.WaitPendingAsync` / `CtpTrader.WaitQueryAsync`，`try/finally` 里摘条目；
+  12 个调用点全部换过去；`QueryCollector.CompletionTimer` 一并 dispose。
+- 兜底：`NextRequestId()` 限 2048 次尝试，取不到就抛带 pending 计数的 `InvalidOperationException`
+  —— 把「静默自旋」变成可见故障。
+- **发送失败也要摘登记**（同日第二轮，槽位探针逼出来的）：13 个调用点都是「先 Register 再调原生发送」，
+  原生返回 `rc != 0`（典型 `rc=-2`：SDK 未就绪/队列满）时旧代码直接抛，登记条目**永无应答也走不到超时回收**。
+  一次断链后 `_queryPending` 能涨到 237，随后所有请求全部 `rc=-2`。
+  现在统一走 `FailSend(reqId, what, rc)`：先摘登记（含 `CompletionTimer`）再抛。
+- 验证边界（诚实说明）：`ctp-net-core` **仓内没有测试工程**（`ctp-net-core.slnx` 只含 src），
+  所以这条改动没有直接单测。回归靠 front 仓的 E2E：`FrontPendingReconcileTests` 4 例里的登录、
+  委托查询、撤单全部走 `CtpTrader` 的这两个等待方法，全绿说明正常路径未被破坏；
+  **超时回收这条分支本身没有自动化用例**（要覆盖得往 SDK 回调解入可控延迟，成本高于收益）。
 
 ### 5.3 逐笔 tick 日志默认关（2026-10-26 日志降噪）
 

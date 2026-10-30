@@ -146,7 +146,10 @@ public sealed class CtpTrader : IDisposable
     // 串行化（lock 内自增），空间余量 = 234 - in-flight（15s 超时封顶 ⇒ 请求速率 <15/s 时恒有余量）。
     private int NextRequestId()
     {
-        while (true)
+        // 有界重试（2026-10-29）：可用号约 234 个，真到全占满说明在飞请求已失控——旧版 while(true)
+        // 会在分配线程上无限空转（无 sleep、无取消），表现为整个客户端假死且无任何日志。
+        // 现在直接抛：上层看到一个明确的「请求号耗尽」，而不是进程挂住。
+        for (var attempt = 0; attempt < 2048; attempt++)
         {
             int n;
             lock (_pendingLock)
@@ -159,6 +162,9 @@ public sealed class CtpTrader : IDisposable
             }
             return n;
         }
+        throw new InvalidOperationException(
+            $"CTP 请求号耗尽：_pending={_pending.Count} / _queryPending={_queryPending.Count} 仍占用" +
+            "（正常应有超时回收——若看到这条，说明有请求既不回也不超时）。");
     }
 
     /// <summary>完整登录流程：连接前置 → 认证 → 登录。</summary>
@@ -180,8 +186,8 @@ public sealed class CtpTrader : IDisposable
         var authTcs = RegisterPending(authReqId);
         int rc = NativeMethods.CtpTrader_Authenticate(
             _handle, req.BrokerId, req.UserId, req.AppId, req.AuthCode, authReqId);
-        if (rc != 0) throw new CtpException($"ReqAuthenticate 发送失败 rc={rc}");
-        var authRsp = await authTcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+        if (rc != 0) FailSend(authReqId, "ReqAuthenticate", rc);
+        var authRsp = await WaitPendingAsync(authReqId, authTcs, ct);
         if (authRsp.Info.ErrorID != 0)
             throw new CtpBusinessException(authRsp.Info.ErrorID, DecodeMsg(authRsp.Info.ErrorMsg));
 
@@ -190,8 +196,8 @@ public sealed class CtpTrader : IDisposable
         var loginTcs = RegisterPending(loginReqId);
         rc = NativeMethods.CtpTrader_Login(
             _handle, req.BrokerId, req.UserId, req.Password, "", loginReqId);
-        if (rc != 0) throw new CtpException($"ReqUserLogin 发送失败 rc={rc}");
-        var loginRsp = await loginTcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+        if (rc != 0) FailSend(loginReqId, "ReqUserLogin", rc);
+        var loginRsp = await WaitPendingAsync(loginReqId, loginTcs, ct);
         if (loginRsp.Info.ErrorID != 0)
             throw new CtpBusinessException(loginRsp.Info.ErrorID, DecodeMsg(loginRsp.Info.ErrorMsg));
 
@@ -212,8 +218,8 @@ public sealed class CtpTrader : IDisposable
         var reqId = NextRequestId();
         var tcs = RegisterPending(reqId);
         int rc = NativeMethods.CtpTrader_SettlementInfoConfirm(_handle, brokerId, investorId, reqId);
-        if (rc != 0) throw new CtpException($"ReqSettlementInfoConfirm 发送失败 rc={rc}");
-        var rsp = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+        if (rc != 0) FailSend(reqId, "ReqSettlementInfoConfirm", rc);
+        var rsp = await WaitPendingAsync(reqId, tcs, ct);
         if (rsp.Info.ErrorID != 0)
             throw new CtpBusinessException(rsp.Info.ErrorID, DecodeMsg(rsp.Info.ErrorMsg));
     }
@@ -234,8 +240,8 @@ public sealed class CtpTrader : IDisposable
         CountQuery();
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryTradingAccount(_handle, brokerId, accountId, reqId);
-        if (rc != 0) throw new CtpException($"ReqQryTradingAccount 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryTradingAccount", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.Count > 0 ? Account.From((CtpAccountInfo)items[0]) : new Account();
     }
 
@@ -249,8 +255,8 @@ public sealed class CtpTrader : IDisposable
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryInvestorPosition(
             _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryInvestorPosition 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryInvestorPosition", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.Select(o => Position.From((CtpPositionInfo)o)).ToList();
     }
 
@@ -263,8 +269,8 @@ public sealed class CtpTrader : IDisposable
         CountQuery();
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryInstrument(_handle, instrumentId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryInstrument 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryInstrument", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.Select(o => InstrumentInfo.From((CtpInstrumentInfo)o)).ToList();
     }
 
@@ -288,7 +294,7 @@ public sealed class CtpTrader : IDisposable
             ExchangeID = req.ExchangeId ?? "",
         };
         int rc = NativeMethods.CtpTrader_OrderInsert(_handle, ref pod, reqId);
-        if (rc != 0) throw new CtpException($"ReqOrderInsert 发送失败 rc={rc}");
+        if (rc != 0) FailSend(reqId, "ReqOrderInsert", rc);
         // CTP 下单异步：报单状态经 OnRtnOrder 事件回报（OrderReceived）。
         // OnRspOrderInsert 仅在前端校验失败时触发，成功时不触发——故不阻塞等待，发送即返回。
         return Task.FromResult(new OrderInsertResult(orderRef, reqId));
@@ -305,8 +311,8 @@ public sealed class CtpTrader : IDisposable
         var tcs = RegisterPending(reqId);
         int rc = NativeMethods.CtpTrader_OrderAction(
             _handle, brokerId, investorId, frontId, sessionId, orderRef, exchangeId, instrumentId, reqId);
-        if (rc != 0) throw new CtpException($"ReqOrderAction 发送失败 rc={rc}");
-        var rsp = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+        if (rc != 0) FailSend(reqId, "ReqOrderAction", rc);
+        var rsp = await WaitPendingAsync(reqId, tcs, ct);
         if (rsp.Info.ErrorID != 0)
             throw new CtpBusinessException(rsp.Info.ErrorID, DecodeMsg(rsp.Info.ErrorMsg));
     }
@@ -320,8 +326,8 @@ public sealed class CtpTrader : IDisposable
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryOrder(
             _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryOrder 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryOrder", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.Select(o => Order.From((CtpOrderInfo)o)).ToList();
     }
 
@@ -338,8 +344,8 @@ public sealed class CtpTrader : IDisposable
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryTrade(
             _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryTrade 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryTrade", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.Select(o => Trade.From((CtpTradeInfo)o)).ToList();
     }
 
@@ -357,8 +363,8 @@ public sealed class CtpTrader : IDisposable
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QrySettlementInfo(
             _handle, brokerId, investorId, tradingDay ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQrySettlementInfo 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQrySettlementInfo", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.OfType<SettlementInfo>().OrderBy(x => x.SequenceNo).ToList();
     }
 
@@ -370,8 +376,8 @@ public sealed class CtpTrader : IDisposable
         CountQuery();
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryExchange(_handle, exchangeId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryExchange 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryExchange", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.OfType<Exchange>().ToList();
     }
 
@@ -383,9 +389,30 @@ public sealed class CtpTrader : IDisposable
         CountQuery();
         var tcs = RegisterQuery(reqId);
         int rc = NativeMethods.CtpTrader_QryInvestor(_handle, investorId ?? "", reqId);
-        if (rc != 0) throw new CtpException($"ReqQryInvestor 发送失败 rc={rc}");
-        var items = await tcs.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        if (rc != 0) FailSend(reqId, "ReqQryInvestor", rc);
+        var items = await WaitQueryAsync(reqId, tcs, ct);
         return items.OfType<Investor>().ToList();
+    }
+
+    /// <summary>
+    /// 请求根本没发出去（SDK 返回 <c>rc != 0</c>，典型 <c>rc=-2</c>：原生层未就绪/队列满）。
+    /// <b>必须先把登记摘掉再抛</b>：调用点都是「先 <see cref="RegisterQuery"/>/<see cref="RegisterPending"/> 再发送」，
+    /// 发送失败即抛出会让条目永无应答、也走不到超时回收——泄漏累积到 234 个 reqId 全被占用后，
+    /// 后续请求全部失败（2026-10-29 探针实测：一次断链后 <c>_queryPending=237</c>）。
+    /// </summary>
+    private void FailSend(int reqId, string what, int rc)
+    {
+        lock (_pendingLock)
+        {
+            _pending.Remove(reqId);
+            if (_queryPending.TryGetValue(reqId, out var c))
+            {
+                _queryPending.Remove(reqId);
+                c.CompletionTimer?.Dispose();
+                c.CompletionTimer = null;
+            }
+        }
+        throw new CtpException($"{what} 发送失败 rc={rc}");
     }
 
     private QueryCollector RegisterQuery(int reqId)
@@ -400,6 +427,30 @@ public sealed class CtpTrader : IDisposable
         var tcs = new TaskCompletionSource<RspCallback>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_pendingLock) _pending[reqId] = tcs;
         return tcs;
+    }
+
+    /// <summary>
+    /// 等一次「一应一答」的响应，<b>超时/取消都要把登记摘掉</b>（2026-10-29 修）：
+    /// 旧版只在收到应答时 <c>Remove</c>，一条 15s 超时的请求会永久占着 reqId。而 reqId 空间只有
+    /// 约 234 个可用号（跳过 tag 字母表），<see cref="NextRequestId"/> 又要跳过 in-flight 号——
+    /// 累积到几十条超时残留后，分配线程会在 <c>while(true)</c> 里无限空转（无 sleep、无取消）。
+    /// </summary>
+    private async Task<RspCallback> WaitPendingAsync(int reqId, TaskCompletionSource<RspCallback> tcs, CancellationToken ct)
+    {
+        try { return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(15), ct); }
+        finally { lock (_pendingLock) _pending.Remove(reqId); }
+    }
+
+    /// <summary>等一次查询收齐（<see cref="QueryCollector"/> 静默期收尾）；同样在超时/取消时摘登记。</summary>
+    private async Task<IReadOnlyList<object>> WaitQueryAsync(int reqId, QueryCollector c, CancellationToken ct)
+    {
+        try { return await c.Tcs.Task.WaitAsync(TimeSpan.FromSeconds(30), ct); }
+        finally
+        {
+            lock (_pendingLock) _queryPending.Remove(reqId);
+            c.CompletionTimer?.Dispose();   // 超时后收集器不会被回收触发 ⇒ 定时器无人 Dispose（旧版泄漏）
+            c.CompletionTimer = null;
+        }
     }
 
     private void TryCompletePending(int reqId, RspCallback cb)
