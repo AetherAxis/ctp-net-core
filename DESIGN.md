@@ -354,7 +354,7 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 
 ### 5.5 在途请求回收 + reqId 饿死保护（2026-10-29）
 
-前置侧把「断连遗留动作」做成登录对账（见 `../../ctp-net-front/DESIGN.md` §3.8）之后，
+前置侧把「断连遗留动作」做成登录对账（见 `../ctp-net-front/DESIGN.md` §3.8）之后，
 客户端这层的对应缺陷变成必修：原来 12 个「等应答/等查询」的点全是 `await tcs.Task.WaitAsync(超时)`，
 **超时即抛、条目不退**。累积效果是 `_pending` 只增不减 ⇒ 可用 reqId 越来越少 ⇒
 最终 `NextRequestId` 在 `while` 里等不到空闲 id 而自旋。
