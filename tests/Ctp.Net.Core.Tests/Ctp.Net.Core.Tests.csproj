@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <AssemblyName>Ctp.Net.Core.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Ctp.Net.Core\Ctp.Net.Core.csproj" />
+  </ItemGroup>
+
+  <!-- 本工程只覆盖**纯托管逻辑**（reqId 分配器、GBK 报文解码）。P/Invoke 组（CtpTrader/CtpMarketData
+       的真实构造与调用）需要 ctp_native 原生库，在没有原生产物的 CI runner 上会 DllNotFound——
+       所以不放进来：原生依赖由 front 仓的 E2E（进程内回环 + 官方 SDK）覆盖，见 DESIGN §6 #1 的分组建议。 -->
+
+</Project>

@@ -29,12 +29,13 @@ C++ SPI 回调 → C++ wrapper（flat C ABI） → C# P/Invoke → 面向对象 
   （其 csproj 同时引用 contracts 与本仓，见 `ctp-net-client/src/Ctp.Net.Client/Ctp.Net.Client.csproj`）。
 - 前置服务器、会话编排、重连策略、连接档案持久化 —— 在 `ctp-net-front`、`ctp-net-client`。
 - 宿主打包、安装包、部署脚本 —— 由宿主仓承担。拆分前的 monorepo 根目录曾有
-  `scripts/build-stockapp-*.{ps1,sh}`，**本仓没有 `scripts/` 目录**（`ls scripts` 不存在），
-  旧文档中的打包流程只作为历史经验保留在 §4.5。
+  `scripts/build-stockapp-*.{ps1,sh}`，**本仓没有这类打包脚本**；旧文档中的打包流程只作为历史经验
+  保留在 §4.5。（2026-10-30 起本仓有了 `scripts/`，但只放**核对类**脚本：
+  `check-native.sh` / `_pe_exports.py`，与打包无关。）
 - NuGet 包 —— 当前未包化，消费者全部走 `ProjectReference`（见 §6 第 3 项）。
 
-**依赖位置**：本仓是依赖图的叶子。`Directory.Packages.props` 为空占位，所有 csproj 中
-**0 个 `PackageReference`、0 个 `ProjectReference`**。反过来，`MIGRATION.md` §5.1 记录的
+**依赖位置**：本仓是依赖图的叶子。库本体（`src/Ctp.Net.Core`）**0 个 `PackageReference`、0 个 `ProjectReference`**；
+`Directory.Packages.props` 里的版本只服务测试工程（`tests/Ctp.Net.Core.Tests` 的 xunit 一族）。反过来，`MIGRATION.md` §5.1 记录的
 消费者是 `ctp-net-client`、`ctp-net-capture`，以及 `ctp-net-front` 的 E2E 测试。
 
 ---
@@ -47,9 +48,9 @@ C++ SPI 回调 → C++ wrapper（flat C ABI） → C# P/Invoke → 面向对象 
 | `src/Ctp.Net.Core/Trader/Models.cs` | 交易 DTO、byte 基枚举、异常 | `CtpConnectRequest`、`LoginResult`、`OrderRequest`、`Account`、`Position`、`Order`、`Trade`、`InstrumentInfo`、`CtpException`、`CtpBusinessException` | 仅 BCL |
 | `src/Ctp.Net.Core/MarketData/CtpMarketData.cs` | 行情门面：登录、订阅、Tick 事件 | `CtpMarketData` | `Native/NativeMethods.cs`、`MarketData/Models.cs` |
 | `src/Ctp.Net.Core/MarketData/Models.cs` | Tick 公共模型 | `TickData` | 仅 BCL |
-| `src/Ctp.Net.Core/Native/NativeMethods.cs` | 25 个 `[DllImport]`、2 张回调函数指针表、委托签名 | `NativeMethods`、`MdNativeMethods`、`CtpTraderCallbacks`、`CtpMdCallbacks` | 动态库 `ctp_native` |
+| `src/Ctp.Net.Core/Native/NativeMethods.cs` | 29 个 `[DllImport]`、2 张回调函数指针表、委托签名 | `NativeMethods`、`MdNativeMethods`、`CtpTraderCallbacks`、`CtpMdCallbacks` | 动态库 `ctp_native` |
 | `src/Ctp.Net.Core/Native/CtpStructs.cs` | CTP 6.7.2 结构体与 wrapper POD 的 C# 镜像 | `RspInfoField`、`RspUserLoginField`、`RspAuthenticateField`、`DepthMarketDataField`、`SpecificInstrumentField`、`CtpAccountInfo`、`CtpPositionInfo`、`CtpOrderInfo`、`CtpTradeInfo`、`CtpInstrumentInfo`、`CtpOrderInsertRequest` | 仅 `System.Runtime.InteropServices` |
-| `Ctp.Native/include/ctp_api.h` | C ABI 契约：导出宏、25 个函数声明、稳定 POD、回调表 | `CTP_API`、`CtpTraderCallbacks`、`CtpMdCallbacks` | CTP 头文件（前向声明） |
+| `Ctp.Native/include/ctp_api.h` | C ABI 契约：导出宏、29 个函数声明、稳定 POD、回调表 | `CTP_API`、`CtpTraderCallbacks`、`CtpMdCallbacks` | CTP 头文件（前向声明） |
 | `Ctp.Native/TraderWrapper.cpp` | `CThostFtdcTraderSpi` 子类把回调转成 C 函数指针；从 CTP 大结构体提取字段填 POD；mac/iOS 登录采集 | `TraderSpi`、`struct CtpTrader` | `CThostFtdcTraderApi`、mac `DataCollect`、iOS `CollectionInfoIOS` |
 | `Ctp.Native/MdWrapper.cpp` | 行情 SPI 桥接（Tick 直传 CTP 结构体指针） | `MdSpi`、`struct CtpMd` | `CThostFtdcMdApi` |
 | `Ctp.Native/CollectionInfoIOS.mm` | iOS 采集信息：异步 block 转同步 | `CtpFetchCollectionInfoIOS` | UIKit / CoreLocation / CoreTelephony |
@@ -57,13 +58,16 @@ C++ SPI 回调 → C++ wrapper（flat C ABI） → C# P/Invoke → 面向对象 
 | `ctp-sdk/{win-x64,win-x86,macos-universal,linux-x64,ios}` | CTP 官方 6.7.2 闭源库与头文件（入库） | `thost*.dll/.lib/.so/.framework` | 无 |
 | `build/native/` | 预编译兜底产物 + CTP 运行时库 | `libctp_native.dylib`（x86_64）、`ctp_native.dll`（x64）、`ios/libctp_native.a`、`thost*.dll` | 由 wrapper 编译产出 |
 | `src/Ctp.Net.Core/Ctp.Net.Core.csproj` | `net10.0`、nullable、Content glob 复制 native | — | `build/native/*.{dylib,so,dll}` |
-| `Directory.Build.props` / `Directory.Packages.props` | 开 CPM、空包版本占位 | — | 无 |
-| `.github/workflows/ci.yml` | Linux 上 `dotnet build -c Release` | — | .NET 10 SDK |
+| `Directory.Build.props` / `Directory.Packages.props` | 开 CPM；版本表只给测试工程用（xunit / Test.Sdk，与 `ctp-net-front` 测试工程同版本），库本体仍零 `PackageReference` | — | 无 |
+| `tests/Ctp.Net.Core.Tests/` | 纯托管单测（不加载 `ctp_native`）：reqId 分配器 8 例、GBK 报文解码 7 例。P/Invoke 组刻意不在此仓——Linux CI 无原生产物 | `RequestIdAllocatorTests`、`DecodeMsgTests` | `src/Ctp.Net.Core`（`InternalsVisibleTo`） |
+| `scripts/check-native.sh` | 原生产物一致性核对：header/C#/各产物导出集合 + MANIFEST sha256；CI 调用 | — | `nm` 或 `llvm-objdump` 或 `scripts/_pe_exports.py` |
+| `.github/workflows/ci.yml` | Linux 上 `dotnet build -c Release` + `dotnet test`（纯托管组）+ `scripts/check-native.sh` | — | .NET 10 SDK |
 
-> 导出函数计数以 `ctp_api.h` 为准，2026-10-24 复核为 **25 个**（交易 17 + 行情 8），
-> 与 `NativeMethods.cs` 的 25 个 `[DllImport]` 一一对应。旧文档写 24 个，与当前头文件不符；
-> 差异点最可能是后来加入的 `CtpTrader_SetCollectionInfo`（旧文档正文已列出该函数，但计数未更新），
-> 下次三平台构建时应以实际导出符号再次复核。
+> 导出函数计数以 `ctp_api.h` 为准，2026-10-30 复核为 **29 个**（交易 21 + 行情 8），
+> 与 `NativeMethods.cs` 的 29 个 `[DllImport]` 一一对应，macOS `libctp_native.dylib` 实际导出也是 29 个。
+> 这个数字此前写作 25（再早写 24）——漂移的原因是 10-24 陆续加了 `QrySettlementInfo`/`QryExchange`/`QryInvestor`/`QryTrade`
+> 四个查询而没人回头改文档。**现在不再靠人工数**：`scripts/check-native.sh` 每次 CI 用 header 声明集去核对
+> 每个产物，`build/native/MANIFEST.md` 记录每个二进制的实际导出数。
 
 ---
 
@@ -227,13 +231,13 @@ Windows 为 MSVC）。CMakeLists 按平台选择 `ctp-sdk/{macos-universal,linux
 
 ### 4.4 验证状态
 
-| 项 | 方式 | 状态（截至 2026-10-24） |
+| 项 | 方式 | 状态（截至 2026-10-30） |
 |---|---|---|
 | 托管编译 | `dotnet build -c Release` | CI 在 ubuntu-latest + .NET 10 上执行通过；本次未重复执行 |
-| 原生符号 | `nm -gU` / `nm -D` / `dumpbin /exports` | 头文件与 C# 声明均为 25 个；2026-07 的历史验证记录为 24 个，差 1 个疑为后加的 `SetCollectionInfo`，需下次构建时以实际导出复核 |
+| 原生符号 | `scripts/check-native.sh`（`nm -gU` / `llvm-objdump` / stdlib PE 解析） | header、C#、macOS dylib 三方一致 **29/29**；**Windows `ctp_native.dll` 只有 24/29**，缺 `QryTrade`/`QryExchange`/`QryInvestor`/`QrySettlementInfo`/`QryInstrument`（已登记在 `scripts/native-known-missing.txt`，需在 Windows 上重编，见 `build/native/MANIFEST.md` §2） |
 | 动态加载 | `ctypes.CDLL` / 启动宿主 | macOS 2026-07 通过（dylib + 3 framework 的 dyld 解析）；Windows 2026-07 打包验证通过；Linux 未验证 |
 | 端到端 | 下游 E2E、SimNow/本地前置 | 测试不在本仓；`MIGRATION.md` ⑤ 记录下游 E2E 只能本地跑，原因是 Linux `.so` 未进 `build/native` |
-| 自动化测试 | `dotnet test` | **0 个测试项目**（slnx 仅 1 个项目） |
+| 自动化测试 | `dotnet test` | `tests/Ctp.Net.Core.Tests`（15 例：reqId 分配器 8 + GBK 解码 7），CI 每次跑；P/Invoke 组不在此仓（Linux 无原生产物），由 `ctp-net-front` 的 loopback E2E 覆盖 |
 
 本次只做静态核对（读源码、`git status`、`git diff`、`file`、`grep`），**未执行 `dotnet build`/`dotnet test`**。
 
@@ -346,7 +350,7 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 | 5 | P2 | 协议/交易语义常量硬编码，无法按柜台调整 | `TraderWrapper.cpp:337-349` 固定 `UserID = InvestorID`、`CombHedgeFlag='1'`、`VolumeCondition='1'`、`MinVolume=1`、`ContingentCondition='1'`、`ForceCloseReason='0'`；`CtpTrader.cs:65` 固定静默期 150ms，登录/撤单 15s、查询 30s（`CtpTrader.cs:164/172/226`）；采集缓冲固定 `char[273]` | 抽 `CtpOptions`（超时、静默期、默认投机标志、成交量条件、采集缓冲）并保留当前默认值；在 XML 注释标明对应 CTP 字段语义；用单测锁默认值 | 公共 API 面扩张；不同柜台（SimNow/生产/本地前置）行为差异需实测后才能改默认；抽象过度会让调用点变复杂 |
 | 6 | P2 | 日志不可插拔，每 tick 同步写 stdout | `CtpTrader.cs:22` 与 `CtpMarketData.cs:13` 的静态 `RealOut`；`OnRtnDepthMarketDataCb` 每收到一帧就 `RealOut.WriteLine`（`CtpMarketData.cs:178`）；无 `ILogger`、无级别、无采样 | 注入可选日志回调（默认仍走 `RealOut`），Tick 日志默认关闭或按采样率输出；保留当前排查开关 | 改变现场诊断习惯；回调内异步日志要防队列积压；API 面增加 |
 | 7 | P2 | macOS 仅 x86_64 产物，且 csproj 不按 RID 过滤 | `file build/native/libctp_native.dylib` = `Mach-O 64-bit ... x86_64`；`bin/Debug/net10.0/` 同时出现 `libctp_native.dylib`、`ctp_native.dll`、`thost*.dll`，说明所有平台二进制被平铺复制；`Ctp.Net.Core.csproj:15` 的 glob 不含 RID 条件 | 在 Apple Silicon 上产 arm64 或 universal 并验证；包化时改为 `runtimes/<rid>/native` + RID 条件复制；publish 后按 RID 校验文件集，避免把 PE 文件塞进 macOS 包 | 需要双架构构建矩阵；包体积变化；Rosetta 与原生 arm64 的回归都要跑 |
-| 8 | P3 | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 25 个（`grep -c '^CTP_API'` = 25）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
+| 8 | P3 | 文档与仓库现状漂移 | 旧文档称 24 个导出，实际 29 个（`grep -c '^CTP_API'` = 29，2026-10-30 复核；此格早先写的 25 是当时口径）；旧 §2.3 称 Windows `ctp_native.dll` 待入库，实际已在 `build/native/`；旧 §3 描述的 `scripts/build-stockapp-*` 在本仓不存在（无 `scripts/`）；`CtpStructs.cs:6` 注释「仅镜像 Phase 1 所需」已过时 | 以本文件为准；加一个核对脚本（导出符号数、`build/native` 清单），CI 中低于预期数量即失败；给 `build/native/` 增加 MANIFEST（平台/架构/构建日期/源码 commit），减少「产物与源码不一致」的排查成本 | 成本低；MANIFEST 需要人工更新，若忘记更新会再次漂移 |
 
 ### 5.5 在途请求回收 + reqId 饿死保护（2026-10-29）
 
@@ -377,3 +381,36 @@ ProjectReference 的叶子库：没有可升级的包版本，也没有本轮触
 **改法**：逐笔行门控到 `CtpMarketData.TickTrace`——env `AETHER_CTP_TICK_TRACE=1`（或 "true"）才打印，
 默认关。⑧ console 的 `[tick]` 行接同一开关（REPL `tick on` 运行期开不受影响）。订阅/退订响应、
 登录/连接事件照常打印（低频、运维定位面）。行为零改动（纯日志）。
+
+### 5.6 待升级项推进：#1 / #4 / #8（2026-10-30）
+
+| # | 状态 | 落点 |
+|---|---|---|
+| 1 | ✅ 纯托管组已建（门面测试未做） | `tests/Ctp.Net.Core.Tests`（15 例）+ `ctp-net-core.slnx` + CI `dotnet test` |
+| 4 | ✅ 3 / 4（Join 一项被原生 ABI 卡住） | Md reqId 改用共用 `CtpRequestIdAllocator`；超时/取消摘登记与 `FailSend` 见 §5.5 |
+| 8 | ✅ | `build/native/MANIFEST.md` + `scripts/check-native.sh` + CI 步骤；顺带查出 Windows DLL 落后 5 个导出 |
+
+**#1 为什么没做门面测试**：`ICtpNativeApi` 接缝要动热点路径上的每个调用点，stub 还得与 `ctp_api.h` 手工同步；
+收益（在 Linux CI 上测门面）不如成本，而真实回归已由 `ctp-net-front` 的 loopback E2E 用真 SDK 覆盖。
+ABI 钉子（`Marshal.SizeOf`/`OffsetOf` 对照 C 侧常量）也留待下次改 POD 时一并做——**现在没有 C 侧尺寸常量可对照**，
+把数字写死在测试里只会变成第二个漂移源。
+
+**#4 的 Join 为什么不能按原建议做**：原建议是「Dispose 需 Join before Release」。读代码后这条路两条腿都断：
+
+1. `CtpTrader_Release`（`Ctp.Native/TraderWrapper.cpp:291`）在 `api->Release()` 之后立刻 `delete h` ——
+   所以 **Release 之后再调 `CtpTrader_Join(h)` 是 use-after-free**（h 已被释放）。
+2. 反过来的 Join → Release 也不行：官方头文件写 `Release()` 是「删除接口对象本身」、`Join()` 是「等待接口线程结束运行」，
+   线程要等 Release 才会退出，先 Join 会永久阻塞。
+
+⇒ 正确修法在原生侧：拆开 ABI（`Release` 只停不删、另加 `Destroy` 回收 handle），需要重编三平台产物。
+本机只有 macOS 工具链，而 Windows 产物本身就落后（见 `build/native/MANIFEST.md` §2）——
+所以这一项记为**被原生 ABI 阻塞**，不是「没时间做」。`TraderWrapper.cpp` 里那句
+「调用方须先 Join 退出后再 Release」已按上述结论改正；C# 侧两个 `*_Join` 声明加了
+`[Obsolete(..., error: true)]`，让误用直接编译失败而不是运行期崩进程。
+
+补「生命周期状态机」也没做：现有 `IsDisposed` + `ObjectDisposedException.ThrowIf` 已覆盖各入口，做成状态机只是增加 ceremony。
+
+**#8 顺带发现（值得单独记住的一件事）**：核对脚本第一次跑就抓出 Windows `ctp_native.dll` 只有 24/29 个导出，
+缺的 5 个正是 10-24 才加进 wrapper 的查询（`QryTrade`/`QryExchange`/`QryInvestor`/`QrySettlementInfo`/`QryInstrument`）。
+Windows 侧调用它们会抛 `EntryPointNotFoundException`（已知调用点：`Aether.CtpConsole` 的查合约）。
+这正是「产物与源码不同步」的实例，也是这个问题第一次被自动发现。

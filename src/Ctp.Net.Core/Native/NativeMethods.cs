@@ -115,6 +115,12 @@ internal static class NativeMethods
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern void CtpTrader_Release(IntPtr handle);
 
+    /// <summary>
+    /// **当前不可用**（DESIGN §5.6 / §6 #4）：`CtpTrader_Release` 在 `api->Release()` 之后立刻 `delete h`，
+    /// 所以 Release 之后调它必崩；而先 Join 再 Release 会永久阻塞（接口线程要等 Release 才退出）。
+    /// 要真正启用，需原生侧拆 ABI（Release 只停不删 + 另加 `CtpTrader_Destroy`）。
+    /// </summary>
+    [Obsolete("Join 在当前 wrapper 下无法安全调用，见 DESIGN §5.6（#4）；勿使用。", error: true)]
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int CtpTrader_Join(IntPtr handle);
 
@@ -229,6 +235,8 @@ internal static class MdNativeMethods
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern void CtpMd_Release(IntPtr handle);
 
+    /// <summary>同 <see cref="CtpTrader_Join"/>：`CtpMd_Release` 之后 handle 已释放，**当前不可用**。</summary>
+    [Obsolete("Join 在当前 wrapper 下无法安全调用，见 DESIGN §5.6（#4）；勿使用。", error: true)]
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern int CtpMd_Join(IntPtr handle);
 

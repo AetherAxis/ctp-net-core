@@ -29,7 +29,7 @@ public sealed class CtpMarketData : IDisposable
 
     private IntPtr _handle;
     private GCHandle _selfHandle;
-    private int _nextRequestId;
+    private readonly CtpRequestIdAllocator _requestIds = new();
 
     private readonly TaskCompletionSource<bool> _frontConnectedTcs =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,7 +82,12 @@ public sealed class CtpMarketData : IDisposable
             throw new InvalidOperationException("CtpMd_Create 失败");
     }
 
-    private int NextRequestId() => Interlocked.Increment(ref _nextRequestId);
+    /// <summary>
+    /// 行情请求号。2026-10-30 起与 Trader 共用 <see cref="CtpRequestIdAllocator"/>（`DESIGN.md` §6 #4）：
+    /// 旧实现是裸 <c>Interlocked.Increment</c>，既不跳过 0xE0..0xEF/0xFE（reqId 作为裸字节进 wire 会被当字段边界），
+    /// 也不回卷。Md 没有查询表，故不传 in-flight 判定。
+    /// </summary>
+    private int NextRequestId() => _requestIds.Next();
 
     /// <summary>连接前置并登录行情。Md 登录不需认证/采集。</summary>
     public async Task LoginAsync(string front, string brokerId, string userId, string password,

@@ -290,7 +290,15 @@ CTP_API CtpTraderHandle CtpTrader_Create(const char* flowPath,
 
 CTP_API void CtpTrader_Release(CtpTraderHandle h) {
     if (!h) return;
-    // 注意：Release 不得在 CTP 回调线程内调用，调用方须先 Join 退出后再 Release。
+    // 注意：Release 不得在 CTP 回调线程内调用。
+    //
+    // 这条注释原来写的是「调用方须先 Join 退出后再 Release」，2026-10-30 核对后认定**两个方向都走不通**，
+    // 所以 C# 侧（CtpTrader.Dispose）目前只调 Release、不调 Join：
+    //   1) Release 之后调 CtpTrader_Join(h)：本函数已 delete h，是 use-after-free；
+    //   2) Join 再 Release：官方头文件里 Release 是「删除接口对象本身」、Join 是「等待接口线程结束运行」，
+    //      接口线程要等 Release 才会退出 ⇒ 先 Join 会永久阻塞。
+    // 真要补 Join，得在原生侧拆 ABI：Release 只停不删 + 另加 CtpTrader_Destroy 回收 handle。
+    // 见 ctp-net-core/DESIGN.md §5.6（#4）。
     if (h->api) h->api->Release();
     delete h->spi;
     delete h;

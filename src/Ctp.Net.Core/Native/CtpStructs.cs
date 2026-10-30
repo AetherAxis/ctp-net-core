@@ -3,7 +3,10 @@ using System.Runtime.InteropServices;
 namespace Ctp.Net.Core.Native;
 
 // CTP 6.7.2 结构体 C# 镜像 —— 严格按 6.7.2 头文件布局（三平台一致，可直传）。
-// 仅镜像 Phase 1 登录流程所需的结构体；后续阶段按需补充。
+// 记录：最早只镜像登录流程的 3 个结构体（"Phase 1"），此后随查询/下单/成交/合约陆续补齐；
+// 现在覆盖 wrapper 实际用到的全部结构体。**新增字段时必须对照 `ctp-sdk/*/ThostFtdc*.h` 的真实偏移**，
+// 定宽槽位（如 81 字节的 InstrumentID）不可改宽度——SDK 侧按固定宽度读写，宽一格就整帧错位。
+// 逐结构体尺寸没有单测钉子（见 DESIGN §6 #1 的 ABI 钉子项）。
 
 /// <summary>响应信息（错误码 + 错误消息）。ErrorMsg 为 GBK 字节，需用 GB18030 解码。</summary>
 [StructLayout(LayoutKind.Sequential)]

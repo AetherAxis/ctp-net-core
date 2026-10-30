@@ -36,3 +36,15 @@ jobs:
       - name: Build
         run: dotnet build ctp-net-core.slnx -c Release
         working-directory: ctp-net-core
+
+      # 纯托管组（reqId 分配器 / GBK 解码）——不加载 ctp_native，Linux runner 可跑。
+      # P/Invoke 组由 ctp-net-front 的 loopback E2E 覆盖（真 SDK 当裁判），不在本仓 CI 跑。
+      - name: Test
+        run: dotnet test ctp-net-core.slnx -c Release --no-build
+        working-directory: ctp-net-core
+
+      # 原生产物一致性：导出符号 vs ctp_api.h、MANIFEST sha256（DESIGN.md §6 #8）。
+      # 已登记的历史缺口见 scripts/native-known-missing.txt（只告警），新的漂移直接失败。
+      - name: Native manifest / exports
+        run: bash scripts/check-native.sh
+        working-directory: ctp-net-core

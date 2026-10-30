@@ -1,2 +1,10 @@
-<!-- CTP wrapper 纯 P/Invoke，零 PackageReference。占位文件（CPM 开启时必需，即使空）。 -->
-<Project />
+<!-- CPM 版本表。库本体（Ctp.Net.Core）零 PackageReference，仍保留本文件（CPM 开启时必需）；
+     测试工程（tests/Ctp.Net.Core.Tests）用到 xunit 一族，版本与 ctp-net-front 测试工程保持一致。 -->
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
+  </ItemGroup>
+</Project>

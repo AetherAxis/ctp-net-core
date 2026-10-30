@@ -23,13 +23,13 @@ public sealed class CtpTrader : IDisposable
         TextWriter.Synchronized(new StreamWriter(Console.OpenStandardOutput(), Console.OutputEncoding) { AutoFlush = true });
 
 
-    private static string DecodeMsg(byte[]? bytes) =>
+    internal static string DecodeMsg(byte[]? bytes) =>
         bytes is null ? string.Empty :
         Encoding.GetEncoding("GB18030").GetString(bytes).TrimEnd('\0').TrimEnd();
 
     private IntPtr _handle;
     private GCHandle _selfHandle;
-    private int _nextRequestId;
+    private readonly CtpRequestIdAllocator _requestIds = new();
 
     // 前置连接一次性等待
     private readonly TaskCompletionSource<bool> _frontConnectedTcs =
@@ -67,7 +67,8 @@ public sealed class CtpTrader : IDisposable
 
     /// <summary>多行收集的静默期（ms）：最后一次 isLast=true 后无新行才完成查询（本地前置 tag 帧恒 isLast=true）。</summary>
     private const int QueryQuietMs = 150;
-    private int _nextOrderRef;   // 登录后由 MaxOrderRef 初始化
+    private int _nextOrderRef;   // 登录后由 Max(MaxOrderRef, OrderRefFloor) 初始化
+    private int _orderRefHighWater;
 
     public event EventHandler? FrontConnected;
     public event EventHandler<int>? FrontDisconnected;
@@ -149,22 +150,14 @@ public sealed class CtpTrader : IDisposable
         // 有界重试（2026-10-29）：可用号约 234 个，真到全占满说明在飞请求已失控——旧版 while(true)
         // 会在分配线程上无限空转（无 sleep、无取消），表现为整个客户端假死且无任何日志。
         // 现在直接抛：上层看到一个明确的「请求号耗尽」，而不是进程挂住。
-        for (var attempt = 0; attempt < 2048; attempt++)
+        // 2026-10-30：分配规则抽到 CtpRequestIdAllocator（与 Md 共用，见 DESIGN §6 #4）。
+        // 分配点仍串行化在 _pendingLock 内——in-flight 判定读的两张表由同一把锁保护。
+        lock (_pendingLock)
         {
-            int n;
-            lock (_pendingLock)
-            {
-                n = ++_nextRequestId;
-                var b = n & 0xFF;
-                if (b is (>= 0xE0 and <= 0xEF) or 0xFE) continue;   // 跳过字母表字节
-                if (n >= 0xFD) _nextRequestId = 0;                    // 回卷（下一轮从 1 起）
-                if (_pending.ContainsKey(n) || _queryPending.ContainsKey(n)) continue;   // 跳过 in-flight
-            }
-            return n;
+            return _requestIds.Next(
+                n => _pending.ContainsKey(n) || _queryPending.ContainsKey(n),
+                () => $"_pending={_pending.Count} / _queryPending={_queryPending.Count} 仍占用");
         }
-        throw new InvalidOperationException(
-            $"CTP 请求号耗尽：_pending={_pending.Count} / _queryPending={_queryPending.Count} 仍占用" +
-            "（正常应有超时回收——若看到这条，说明有请求既不回也不超时）。");
     }
 
     /// <summary>完整登录流程：连接前置 → 认证 → 登录。</summary>
@@ -202,7 +195,12 @@ public sealed class CtpTrader : IDisposable
             throw new CtpBusinessException(loginRsp.Info.ErrorID, DecodeMsg(loginRsp.Info.ErrorMsg));
 
         var f = (RspUserLoginField)loginRsp.Field!;
-        if (int.TryParse(f.MaxOrderRef, out var mref)) _nextOrderRef = mref;
+        // 下单引用起点 = max(柜台 MaxOrderRef, 本地高水位)。
+        // 只用 MaxOrderRef 有个已知风险（DESIGN §6 #13）：柜台会话一换（重启/换前置/换日）它的计数会归零，
+        // 于是新会话会从 1 重新发号——而「按 (账户, OrderRef) 定位」的前置/交易所侧可能还留着上一会话的单。
+        // OrderRefFloor 让宿主持久化的本地高水位参与取大；宿主要跨重启单调，就把上次的
+        // OrderRefHighWater 写回来。本层不自己持久化（库不碰磁盘），只保证「不低于给定下限」。
+        if (int.TryParse(f.MaxOrderRef, out var mref)) _nextOrderRef = Math.Max(mref, OrderRefFloor);
 
         // 确认结算结果（每个交易日下单前必须；登录后自动确认，使后续下单可用。失败不影响登录）
         try { await ConfirmSettlementAsync(req.BrokerId, req.UserId, ct); }
@@ -224,9 +222,20 @@ public sealed class CtpTrader : IDisposable
             throw new CtpBusinessException(rsp.Info.ErrorID, DecodeMsg(rsp.Info.ErrorMsg));
     }
 
+    /// <summary>
+    /// 下单引用（OrderRef）的**本地高水位下限**：登录时取 <c>max(柜台 MaxOrderRef, 本值)</c> 作为起点。
+    /// 宿主把上一会话的 <see cref="OrderRefHighWater"/> 写回来，就能保证跨重启、跨会话单调递增，
+    /// 不会与柜台里仍挂着的旧单撞号（DESIGN §6 #13）。非法值（&lt;=0）忽略。
+    /// </summary>
+    public int OrderRefFloor { get; set; }
+
+    /// <summary>本实例已发出的最大 OrderRef（0 = 还没下过单）。宿主持久化它即可获得单调性。</summary>
+    public int OrderRefHighWater => Volatile.Read(ref _orderRefHighWater);
+
     private string NextOrderRef()
     {
         int n = Interlocked.Increment(ref _nextOrderRef);
+        Volatile.Write(ref _orderRefHighWater, n);   // 先记账再返回：发出去的号永不回卷
         return n.ToString("D12");   // CTP OrderRef 零填充（12 位够用）
     }
 
