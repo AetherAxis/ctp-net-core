@@ -139,6 +139,52 @@ public sealed class CtpTrader : IDisposable
     public int QueryRequestCount => _queryRequestCount;
     private void CountQuery() => Interlocked.Increment(ref _queryRequestCount);
 
+    // —— 查询闸门：全局串行 + 最小间隔（2026-10-31，open-issues #26 / #30 收尾）——
+    //
+    // 真 CTP 交易 API 的查询是**全局串行**的，这条约束是 API 自己在本地执行的：
+    //   ①上一笔查询还没应答（未处理请求表里还挂着）就再发一笔 ⇒ 直接返回 rc=-2「未处理请求超过许可数」；
+    //   ②1 秒内发第二笔 ⇒ rc=-3「每秒发送请求数超过许可数」。
+    // 客户端从来没设过闸，两条查询路径各在自己的任务里跑：做市商**每次报单前**刷新持仓（2 秒节流），
+    // 对账每 20 秒查一次报单。撞上的症状就是这个：
+    //   `[Brokerage] 持仓查询失败（沿用缓存快照）: ReqQryInvestorPosition 发送失败 rc=-2`
+    // 持仓吃缓存、报单不清场，紧接着再来一轮 `前置断开 reason=4097`。
+    // 更隐蔽的一半：查报单/查持仓是**多帧应答**（实测 200 行报单 ≈ 89KB 几十帧），一笔查询的应答
+    // 还在流的时候另一笔查询的应答插进来，真 API 的请求-应答通道就错序了 —— 它不会报错，而是
+    // **直接强拆 TCP**。前置侧看到的就是 `会话异常: Unable to read data from the transport connection:
+    // 远程主机强迫关闭了一个现有的连接`（客户端 OS 发 RST），而前置自己毫不知情、也没踢过人。
+    // 这就是 probe1 走前置那条线上「无缘无故断开」的残余来源：不是验证、不是互踢，是客户端自己
+    // 把查询发叠了。
+    //
+    // 规矩：所有查询排队，一次只放一笔出去，两笔之间至少隔 MinQueryInterval（CTP 的 1 秒/笔流控）。
+    // 下单/撤单不走这道闸——它们在 CTP 里是另一套（更大）的许可额度，混进来只会白白拖慢报单。
+    // 2026-10-31 17:5x 定案复核：**不做人为限速**。原先设成 1 秒是当「前置不回就别发第二笔」的
+    // 补丁用的；真正的原因是前置写循环逐帧同步写盘把会话卡住（已修），前置侧现在实测零慢帧、
+    // 零超时。限速只会让对账/持仓查询互相排队，反而制造「查询超时」，所以置零——只保留
+    // 「同一时刻只有一笔查询在飞」这一条（那是 CTP API 自己的语义，不是我们加的节流）。
+    private static readonly TimeSpan MinQueryInterval = TimeSpan.Zero;
+    private readonly SemaphoreSlim _queryGate = new(1, 1);
+    private DateTime _lastQuerySentUtc = DateTime.MinValue;
+
+    /// <summary>排队执行一次查询：全局串行 + 最小间隔。发号、发送、收齐都在闸门内，
+    /// 保证「上一条收完才发下一条」——多帧应答因此永远不会互相穿插。</summary>
+    private async Task<IReadOnlyList<object>> RunQueryAsync(string what, Func<int, int> send, CancellationToken ct)
+    {
+        await _queryGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var wait = _lastQuerySentUtc + MinQueryInterval - DateTime.UtcNow;
+            if (wait > TimeSpan.Zero) await Task.Delay(wait, ct).ConfigureAwait(false);
+            var reqId = NextRequestId();
+            CountQuery();
+            var tcs = RegisterQuery(reqId);
+            _lastQuerySentUtc = DateTime.UtcNow;
+            int rc = send(reqId);
+            if (rc != 0) FailSend(reqId, what, rc);
+            return await WaitQueryAsync(reqId, tcs, ct).ConfigureAwait(false);
+        }
+        finally { _queryGate.Release(); }
+    }
+
     // reqId 序列跳过 tag 字母表 {E0..EF, FE}（2026-10-14 4:20 死循环根因的客户端侧防线）：
     // reqId 经 SDK 序列化上 wire，值落在字母表时 SDK 写 [E0][值] 转义；前置应答的 reqId 回显槽是
     // **定宽 1B**（实测 18B 转义形式同样被 SDK 丢弃不派发）⇒ 应答无法承载字母表值 ⇒ 查询挂死
@@ -249,12 +295,8 @@ public sealed class CtpTrader : IDisposable
         CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryTradingAccount(_handle, brokerId, accountId, reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryTradingAccount", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryTradingAccount",
+            reqId => NativeMethods.CtpTrader_QryTradingAccount(_handle, brokerId, accountId, reqId), ct);
         return items.Count > 0 ? Account.From((CtpAccountInfo)items[0]) : new Account();
     }
 
@@ -263,13 +305,9 @@ public sealed class CtpTrader : IDisposable
         CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryInvestorPosition(
-            _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryInvestorPosition", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryInvestorPosition",
+            reqId => NativeMethods.CtpTrader_QryInvestorPosition(
+                _handle, brokerId, investorId, instrumentId ?? "", reqId), ct);
         return items.Select(o => Position.From((CtpPositionInfo)o)).ToList();
     }
 
@@ -278,12 +316,8 @@ public sealed class CtpTrader : IDisposable
         CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryInstrument(_handle, instrumentId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryInstrument", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryInstrument",
+            reqId => NativeMethods.CtpTrader_QryInstrument(_handle, instrumentId ?? "", reqId), ct);
         return items.Select(o => InstrumentInfo.From((CtpInstrumentInfo)o)).ToList();
     }
 
@@ -334,13 +368,9 @@ public sealed class CtpTrader : IDisposable
         string? instrumentId = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryOrder(
-            _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryOrder", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryOrder",
+            reqId => NativeMethods.CtpTrader_QryOrder(
+                _handle, brokerId, investorId, instrumentId ?? "", reqId), ct);
         return items.Select(o => Order.From((CtpOrderInfo)o)).ToList();
     }
 
@@ -352,13 +382,9 @@ public sealed class CtpTrader : IDisposable
         string? instrumentId = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryTrade(
-            _handle, brokerId, investorId, instrumentId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryTrade", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryTrade",
+            reqId => NativeMethods.CtpTrader_QryTrade(
+                _handle, brokerId, investorId, instrumentId ?? "", reqId), ct);
         return items.Select(o => Trade.From((CtpTradeInfo)o)).ToList();
     }
 
@@ -371,13 +397,9 @@ public sealed class CtpTrader : IDisposable
         string? tradingDay = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QrySettlementInfo(
-            _handle, brokerId, investorId, tradingDay ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQrySettlementInfo", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQrySettlementInfo",
+            reqId => NativeMethods.CtpTrader_QrySettlementInfo(
+                _handle, brokerId, investorId, tradingDay ?? "", reqId), ct);
         return items.OfType<SettlementInfo>().OrderBy(x => x.SequenceNo).ToList();
     }
 
@@ -385,12 +407,8 @@ public sealed class CtpTrader : IDisposable
     public async Task<IReadOnlyList<Exchange>> QueryExchangeAsync(string? exchangeId = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryExchange(_handle, exchangeId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryExchange", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryExchange",
+            reqId => NativeMethods.CtpTrader_QryExchange(_handle, exchangeId ?? "", reqId), ct);
         return items.OfType<Exchange>().ToList();
     }
 
@@ -398,12 +416,8 @@ public sealed class CtpTrader : IDisposable
     public async Task<IReadOnlyList<Investor>> QueryInvestorAsync(string? investorId = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
-        var reqId = NextRequestId();
-        CountQuery();
-        var tcs = RegisterQuery(reqId);
-        int rc = NativeMethods.CtpTrader_QryInvestor(_handle, investorId ?? "", reqId);
-        if (rc != 0) FailSend(reqId, "ReqQryInvestor", rc);
-        var items = await WaitQueryAsync(reqId, tcs, ct);
+        var items = await RunQueryAsync("ReqQryInvestor",
+            reqId => NativeMethods.CtpTrader_QryInvestor(_handle, investorId ?? "", reqId), ct);
         return items.OfType<Investor>().ToList();
     }
 
