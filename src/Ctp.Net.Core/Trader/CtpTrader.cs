@@ -129,8 +129,12 @@ public sealed class CtpTrader : IDisposable
     }
 
     // 查询族请求计数（⑰⑮查报单查合约——2026-10-15 定案：SDK 的链路计数在第 256 个**同族**请求起
-    // 换 E2 逐字节标签编码形态，本地前置的应答回显无法满足客户端校验（五种候选形态全被拒、真前置
-    // 无凭据不可取证）——宿主经 QueryRequestCount 在逼近边界前主动快速重连规避（计数清零）。
+    // 让请求 op/实例字段加宽（≤254 写 E4+1B、≥255 写 E3+2B）。当年记录的处理意向是「宿主经
+    // QueryRequestCount 逼近边界前主动快速重连规避（计数清零）」——**该规避从未实现**，两根钉子
+    // 也没打成：2026-10-31 两根 bot 上前置浸泡，计数越界后查报单全成前置的「未知业务帧」永不应答，
+    // 查询管线堵死整夜（持仓吃缓存快照 + 周期 4097 断连，open-issues #26）。
+    // **现在的正解在前置侧**：CtpOrderWireCodec.IsQueryOrderRequest 已按宽度无关判据认下加宽形态
+    // （与⑲报单的 #23 同一修法）。本计数保留只作观测（例如夹在诊断日志里看会话查询压力）。
     private int _queryRequestCount;
     public int QueryRequestCount => _queryRequestCount;
     private void CountQuery() => Interlocked.Increment(ref _queryRequestCount);
